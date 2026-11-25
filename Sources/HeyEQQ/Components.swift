@@ -7,14 +7,18 @@ struct VerticalGainSlider: View {
     let range: ClosedRange<Double>
     let label: String
     var tint: Color = .accentColor
+    /// Narrower fader with smaller text, for the menu-bar popover.
+    var compact = false
 
-    private let thumb: CGFloat = 16
+    private var thumb: CGFloat { compact ? 12 : 16 }
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: compact ? 4 : 6) {
             Text(String(format: "%+.1f", value))
-                .font(.caption2.monospacedDigit())
+                .font(compact ? .system(size: 9).monospacedDigit() : .caption2.monospacedDigit())
                 .foregroundStyle(value == 0 ? .secondary : .primary)
+                .lineLimit(1)
+                .fixedSize()
 
             GeometryReader { geo in
                 let travel = geo.size.height - thumb
@@ -44,12 +48,12 @@ struct VerticalGainSlider: View {
             }
 
             Text(label)
-                .font(.caption2.weight(.medium))
+                .font(compact ? .system(size: 9, weight: .medium) : .caption2.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .fixedSize()
         }
-        .frame(minWidth: 40)
+        .frame(minWidth: compact ? 24 : 40)
         .contextMenu { Button("Reset \(label) to 0 dB") { value = 0 } }
         .accessibilityElement()
         .accessibilityLabel(label)
@@ -122,6 +126,8 @@ struct ResponseCurveView: View {
     /// Draws each band's own response as a thin coloured line (Expert mode).
     var showsBandCurves = false
     var selectedBand: Int?
+    /// Draws a coloured dot at each band's frequency/gain (read-only; the popover's Expert summary).
+    var showsBandMarkers = false
 
     var body: some View {
         Canvas { ctx, size in
@@ -193,10 +199,69 @@ struct ResponseCurveView: View {
             fill.closeSubpath()
             ctx.fill(fill, with: .color(Color.accentColor.opacity(0.15)))
             ctx.stroke(line, with: .color(.accentColor), style: StrokeStyle(lineWidth: 2, lineJoin: .round))
+
+            if showsBandMarkers {
+                for (i, band) in curve.bands.enumerated() {
+                    let center = CGPoint(x: plot.x(band.frequency), y: plot.y(band.type.usesGain ? band.gainDB : 0))
+                    let dot = Path(ellipseIn: CGRect(x: center.x - 4.5, y: center.y - 4.5, width: 9, height: 9))
+                    ctx.opacity = band.isEnabled ? 1 : 0.35
+                    ctx.fill(dot, with: .color(bandColor(i)))
+                    ctx.stroke(dot, with: .color(.white.opacity(0.9)), lineWidth: 1)
+                }
+                ctx.opacity = 1
+            }
         }
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
         .accessibilityElement()
         .accessibilityLabel("Frequency response")
+    }
+}
+
+/// The "sound bar": the live output spectrum as vertical bars, low frequencies on the left.
+/// Bars rest as a row of dots when there is no frame (off, or nothing playing).
+struct SpectrumBars: View {
+    let frame: SpectrumFrame?
+    var barCount = 40
+
+    var body: some View {
+        Canvas { ctx, size in
+            let levels = barLevels()
+            let gap: CGFloat = 2
+            let width = max((size.width - gap * CGFloat(barCount - 1)) / CGFloat(barCount), 1)
+            let rest = min(width, 3)
+            let shading = GraphicsContext.Shading.linearGradient(
+                Gradient(colors: [.accentColor, .cyan, .mint]),
+                startPoint: CGPoint(x: 0, y: size.height), endPoint: .zero)
+            for i in 0..<barCount {
+                let height = max(rest, levels[i] * size.height)
+                let bar = CGRect(x: CGFloat(i) * (width + gap), y: size.height - height, width: width, height: height)
+                ctx.fill(Path(roundedRect: bar, cornerRadius: min(width / 2, 2)),
+                         with: levels[i] > 0 ? shading : .color(Color.primary.opacity(0.18)))
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Live spectrum")
+    }
+
+    /// 0...1 per bar: the loudest analyzer band in each bar's slice, −85…−10 dBFS.
+    private func barLevels() -> [CGFloat] {
+        guard let frame, !frame.levelsDB.isEmpty else { return Array(repeating: 0, count: barCount) }
+        let bands = frame.levelsDB.count
+        return (0..<barCount).map { i in
+            let lo = i * bands / barCount
+            let hi = max((i + 1) * bands / barCount, lo + 1)
+            let db = frame.levelsDB[lo..<min(hi, bands)].max() ?? -100
+            return CGFloat(min(max((Double(db) + 85) / 75, 0), 1))
+        }
+    }
+}
+
+extension View {
+    /// Rounded, lightly tinted section background used in the popover.
+    func card() -> some View {
+        padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -235,6 +300,13 @@ extension EQEngine.Status {
         case .failed: .red
         }
     }
+}
+
+/// Frequency with unit for lists: "80 Hz", "1 kHz", "2.5 kHz".
+func frequencyText(_ f: Double) -> String {
+    f >= 1_000
+        ? (f / 1_000).formatted(.number.precision(.fractionLength(0...2))) + " kHz"
+        : f.formatted(.number.precision(.fractionLength(0...1))) + " Hz"
 }
 
 /// Short label for a band frequency: 32, 125, 1k, 16k.

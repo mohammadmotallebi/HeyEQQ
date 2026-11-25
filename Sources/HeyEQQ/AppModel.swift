@@ -101,6 +101,7 @@ final class AppModel {
     @ObservationIgnored private var hotKey: GlobalHotKey?
     @ObservationIgnored private let analyzer = SpectrumAnalyzer()
     @ObservationIgnored private var analyzerClients = 0
+    @ObservationIgnored private var spectrumBarClients = 0
 
     init() {
         enabled = defaults.object(forKey: Key.enabled) as? Bool ?? true
@@ -169,8 +170,9 @@ final class AppModel {
         refreshLaunchAtLogin()
     }
 
-    // MARK: - Spectrum analyzer (runs only while a window showing it is open)
+    // MARK: - Spectrum analyzer (runs only while a view showing it is open)
 
+    /// Equalizer window: shows the spectrum only while `showAnalyzer` is on.
     func startAnalyzer() {
         analyzerClients += 1
         updateAnalyzer()
@@ -181,15 +183,31 @@ final class AppModel {
         updateAnalyzer()
     }
 
+    /// Popover sound bar: always wants the spectrum while it is open.
+    func startSpectrumBars() {
+        spectrumBarClients += 1
+        updateAnalyzer()
+    }
+
+    func stopSpectrumBars() {
+        spectrumBarClients = max(0, spectrumBarClients - 1)
+        updateAnalyzer()
+    }
+
+    private var analyzerWanted: Bool { spectrumBarClients > 0 || (showAnalyzer && analyzerClients > 0) }
+
     private func updateAnalyzer() {
-        let on = showAnalyzer && analyzerClients > 0
+        let on = analyzerWanted
         engine.setAnalyzerEnabled(on)
         if !on { spectrum = nil; analyzer.reset() }
     }
 
     private func tickAnalyzer() {
-        guard showAnalyzer, analyzerClients > 0,
-              let (samples, rate) = engine.analyzerSamples(count: analyzer.fftSize) else { return }
+        guard analyzerWanted else { return }
+        guard let (samples, rate) = engine.analyzerSamples(count: analyzer.fftSize) else {
+            if spectrum != nil { spectrum = nil; analyzer.reset() }
+            return
+        }
         let levels = analyzer.analyze(samples, sampleRate: rate)
         spectrum = SpectrumFrame(frequencies: analyzer.bandFrequencies, levelsDB: levels)
     }
