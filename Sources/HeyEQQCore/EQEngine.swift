@@ -41,6 +41,8 @@ public final class EQEngine: @unchecked Sendable {
     private var appRules: [String: EQCurve] = [:]
     private var preferredUID: String?
     private var mainPipeline: SystemAudioTap?
+    /// Whether the running pipelines capture the device stream at full channel count.
+    private var pipelinesMultichannel = false
     private var appPipelines: [String: SystemAudioTap] = [:]
     /// App bundle ID → process objects routed to its pipeline at the last rebuild.
     private var routedProcesses: [String: [AudioObjectID]] = [:]
@@ -181,8 +183,10 @@ public final class EQEngine: @unchecked Sendable {
         publish(.starting)
         let routes = AudioProcessCatalog.processes(for: appRules.keys)
         let excluded = routes.values.flatMap { $0 }
+        let multichannel = wantsMultichannel(device)
 
-        let main = SystemAudioTap(outputDevice: device, curve: curve, target: .global(excluding: excluded))
+        let main = SystemAudioTap(outputDevice: device, curve: curve,
+                                  target: multichannel ? .deviceStream(excluding: excluded) : .global(excluding: excluded))
         do {
             try main.start() // may block on the first-run permission prompt
         } catch {
@@ -192,10 +196,12 @@ public final class EQEngine: @unchecked Sendable {
         }
         main.processor?.setCurve(curve) // settings may have changed while start() was blocked
         mainPipeline = main
-        log.notice("running on \(device.name, privacy: .public) [\(device.uid, privacy: .public)] rate=\(main.processor?.sampleRate ?? 0) excludedSelf=\(main.excludedSelf) appPipelines=\(routes.count)")
+        pipelinesMultichannel = multichannel
+        log.notice("running on \(device.name, privacy: .public) [\(device.uid, privacy: .public)] rate=\(main.processor?.sampleRate ?? 0) deviceCh=\(device.outputChannels) tapCh=\(main.processor?.tapChannelCount ?? 0) multichannel=\(multichannel) excludedSelf=\(main.excludedSelf) appPipelines=\(routes.count)")
 
         for (app, ids) in routes.sorted(by: { $0.key < $1.key }) {
-            let pipeline = SystemAudioTap(outputDevice: device, curve: appRules[app] ?? .flat, target: .processes(ids))
+            let pipeline = SystemAudioTap(outputDevice: device, curve: appRules[app] ?? .flat,
+                                          target: multichannel ? .processesOnDevice(ids) : .processes(ids))
             do {
                 try pipeline.start()
                 appPipelines[app] = pipeline
@@ -274,9 +280,21 @@ public final class EQEngine: @unchecked Sendable {
     /// Consecutive 0.5 s windows above the threshold before stopping (2 s).
     static let feedbackWindows = 4
 
+    /// Full-channel capture only makes sense when apps are actually playing to this device
+    /// (it's the system default) and it has more than two channels on its first stream.
+    private func wantsMultichannel(_ device: OutputDevice) -> Bool {
+        // Debug: `defaults write com.heyeqq.app forceDeviceStreamTap -bool YES` exercises the
+        // device-stream capture path on a stereo device (for testing without surround hardware).
+        let forced = UserDefaults.standard.bool(forKey: "forceDeviceStreamTap")
+        return (device.isMultichannel || forced) && OutputDeviceCatalog.defaultOutput()?.uid == device.uid
+    }
+
     private func rebuildIfDeviceChanged() {
         guard enabled else { return }
-        if mainPipeline?.outputDevice.uid != desiredDevice()?.uid { rebuild() }
+        guard let desired = desiredDevice() else { return }
+        if mainPipeline?.outputDevice.uid != desired.uid || pipelinesMultichannel != wantsMultichannel(desired) {
+            rebuild()
+        }
     }
 
     /// Coalesces bursts of Core Audio notifications (a device switch fires several).
@@ -318,6 +336,11 @@ public final class EQEngine: @unchecked Sendable {
         let force: () -> Void = { [weak self] in self?.scheduleRebuild(force: true) }
         deviceListeners = [kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyDeviceIsAlive].compactMap {
             try? PropertyListener(object: device.id, selector: $0, queue: queue, handler: force)
+        }
+        // Speaker configuration changed (e.g. stereo -> 5.1 in Audio MIDI Setup).
+        if let layout = try? PropertyListener(object: device.id, selector: kAudioDevicePropertyStreamConfiguration,
+                                              scope: kAudioObjectPropertyScopeOutput, queue: queue, handler: force) {
+            deviceListeners.append(layout)
         }
     }
 

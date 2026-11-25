@@ -10,6 +10,8 @@ import Synchronization
 /// No allocation on the audio thread.
 public final class EQProcessor: @unchecked Sendable {
     public static let maxBands = EQCurve.maxBands
+    /// Most channels processed per pipeline (7.1.4 = 12, with headroom).
+    public static let maxChannels = 16
     /// How fast gains glide toward a new value.
     static let gainSlewDBPerSecond = 60.0
     /// Bypass crossfade duration.
@@ -57,7 +59,12 @@ public final class EQProcessor: @unchecked Sendable {
     private let startCoeffs: UnsafeMutableBufferPointer<BiquadCoefficients>
     private let ramping: UnsafeMutableBufferPointer<Bool>
     private let active: UnsafeMutableBufferPointer<Bool>
-    private let states: UnsafeMutableBufferPointer<BiquadState> // [band * 2 + channel]
+    private let states: UnsafeMutableBufferPointer<BiquadState> // [band * maxChannels + channel]
+    private let inChannels: UnsafeMutableBufferPointer<Channel>
+    private let outChannels: UnsafeMutableBufferPointer<Channel>
+    private let wetScratch: UnsafeMutableBufferPointer<Double>
+    private let dryScratch: UnsafeMutableBufferPointer<Double>
+    private let placeholderSample: UnsafeMutablePointer<Float>
     private var targetCount = 0
     private var currentCount = 0
     private var targetPreampDB = 0.0
@@ -81,13 +88,22 @@ public final class EQProcessor: @unchecked Sendable {
         startCoeffs = .allocate(capacity: n); startCoeffs.initialize(repeating: .identity)
         ramping = .allocate(capacity: n); ramping.initialize(repeating: false)
         active = .allocate(capacity: n); active.initialize(repeating: false)
-        states = .allocate(capacity: n * 2); states.initialize(repeating: .init())
+        states = .allocate(capacity: n * Self.maxChannels); states.initialize(repeating: .init())
+        placeholderSample = .allocate(capacity: 1); placeholderSample.initialize(to: 0)
+        inChannels = .allocate(capacity: Self.maxChannels)
+        inChannels.initialize(repeating: Channel(ptr: placeholderSample, stride: 0))
+        outChannels = .allocate(capacity: Self.maxChannels)
+        outChannels.initialize(repeating: Channel(ptr: placeholderSample, stride: 0))
+        wetScratch = .allocate(capacity: Self.maxChannels); wetScratch.initialize(repeating: 0)
+        dryScratch = .allocate(capacity: Self.maxChannels); dryScratch.initialize(repeating: 0)
         analyzerRing = .allocate(capacity: Self.analyzerCapacity); analyzerRing.initialize(repeating: 0)
     }
 
     deinit {
         target.deallocate(); current.deallocate(); coeffs.deallocate(); startCoeffs.deallocate()
         ramping.deallocate(); active.deallocate(); states.deallocate(); analyzerRing.deallocate()
+        inChannels.deallocate(); outChannels.deallocate(); wetScratch.deallocate(); dryScratch.deallocate()
+        placeholderSample.deallocate()
     }
 
     /// Copies the most recent `buffer.count` analyzer samples (oldest first) into `buffer`, adding
@@ -129,6 +145,11 @@ public final class EQProcessor: @unchecked Sendable {
         }
     }
 
+    @inline(__always)
+    private func resetStates(band: Int) {
+        for c in 0..<Self.maxChannels { states[band * Self.maxChannels + c] = .init() }
+    }
+
     /// True when bands would change shape or disappear, which can't be interpolated directly.
     private func structureDiffers() -> Bool {
         if targetCount < currentCount { return true }
@@ -168,7 +189,7 @@ public final class EQProcessor: @unchecked Sendable {
                     current[i] = target[i]
                     if target[i].type.usesGain { current[i].gainDB = 0 }
                     coeffs[i] = current[i].isTransparent ? .identity : .make(for: current[i], sampleRate: sampleRate)
-                    states[i * 2] = .init(); states[i * 2 + 1] = .init()
+                    resetStates(band: i)
                 }
                 currentCount = targetCount
             }
@@ -218,13 +239,13 @@ public final class EQProcessor: @unchecked Sendable {
             }
             ramping[i] = changed && !snap
             let nowActive = coeffs[i] != .identity || startCoeffs[i] != .identity
-            if nowActive && !active[i] { states[i * 2] = .init(); states[i * 2 + 1] = .init() }
+            if nowActive && !active[i] { resetStates(band: i) }
             active[i] = nowActive
         }
     }
 
     /// Pointer + stride for one channel inside an AudioBufferList (handles interleaved or not).
-    private struct Channel {
+    struct Channel {
         var ptr: UnsafeMutablePointer<Float>
         var stride: Int
         @inline(__always) subscript(frame: Int) -> Float {
@@ -234,19 +255,28 @@ public final class EQProcessor: @unchecked Sendable {
     }
 
     /// Called from the IO proc. The tap's streams are the last input streams of the aggregate device.
+    ///
+    /// Channel mapping: tap channel *n* → device channel *n* (5.1 / 7.1 stay discrete). A mono tap
+    /// feeds the first two outputs. Device channels beyond the tap's are left silent, which is what
+    /// macOS does when stereo content plays on a surround device.
     public func process(input: UnsafePointer<AudioBufferList>, output: UnsafeMutablePointer<AudioBufferList>) {
         let outList = UnsafeMutableAudioBufferListPointer(output)
-        // Silence all outputs first; we only fill the first two channels.
         for buf in outList { if let d = buf.mData { memset(d, 0, Int(buf.mDataByteSize)) } }
 
         let inList = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
         callbackCount.add(1, ordering: .relaxed)
         inputLayout.store(Self.layout(inList), ordering: .relaxed)
         outputLayout.store(Self.layout(outList), ordering: .relaxed)
-        guard let (inL, inR, inFrames) = tapChannels(inList),
-              let (outL, outR, outFrames) = firstTwoChannels(outList) else { return }
+
+        let (inCount, inFrames) = collectChannels(inList, from: tapStartBuffer(inList), into: inChannels)
+        let (outCount, outFrames) = collectChannels(outList, from: 0, into: outChannels)
+        guard inCount > 0, outCount > 0 else { return }
         let frames = min(inFrames, outFrames)
         guard frames > 0 else { return }
+
+        // Processed channels and where each one reads from.
+        let mono = inCount == 1
+        let channelCount = mono ? min(2, outCount) : min(inCount, outCount)
 
         pullParams()
         advance(frames: frames)
@@ -274,36 +304,48 @@ public final class EQProcessor: @unchecked Sendable {
         let analyzing = analyzerEnabled.load(ordering: .relaxed)
         let ringStart = analyzerWriteIndex.load(ordering: .relaxed)
         let ringMask = Self.analyzerCapacity - 1
+        let stride = Self.maxChannels
 
         for f in 0..<frames {
-            let xl = inL[f], xr = inR[f]
-            peak = max(peak, abs(xl), abs(xr))
+            for c in 0..<channelCount {
+                let x = inChannels[mono ? 0 : c][f]
+                peak = max(peak, abs(x))
+                dryScratch[c] = Double(x)
+                wetScratch[c] = Double(x)
+            }
             let t = Double(f + 1) * invFrames
 
-            var l = Double(xl), r = Double(xr)
             for b in 0..<bandCount where active[b] {
                 let k = ramping[b] ? BiquadCoefficients.lerp(startCoeffs[b], coeffs[b], t) : coeffs[b]
-                l = states[b * 2].process(l, k)
-                r = states[b * 2 + 1].process(r, k)
+                let base = b * stride
+                for c in 0..<channelCount {
+                    wetScratch[c] = states[base + c].process(wetScratch[c], k)
+                }
             }
             let pre = preampFrom + (endPreamp - preampFrom) * t
-            l *= pre; r *= pre
-
             if wet != wetTarget { wet = wet < wetTarget ? min(wet + wetStep, 1) : max(wet - wetStep, 0) }
-            var yl = Double(xl) * (1 - wet) + l * wet
-            var yr = Double(xr) * (1 - wet) + r * wet
 
-            // Peak limiter: instant attack (never exceeds the ceiling), smooth exponential release.
-            let level = max(abs(yl), abs(yr))
+            // Mix, then one limiter for all channels so the surround balance never shifts.
+            var level = 0.0
+            for c in 0..<channelCount {
+                let y = dryScratch[c] * (1 - wet) + wetScratch[c] * pre * wet
+                wetScratch[c] = y
+                level = max(level, abs(y))
+            }
             let needed = level > Self.limiterCeiling ? Self.limiterCeiling / level : 1
             limiterGain = needed < limiterGain ? needed : needed + (limiterGain - needed) * limiterRelease
             minLimiterGain = min(minLimiterGain, limiterGain)
-            yl *= limiterGain; yr *= limiterGain
 
-            outL[f] = Float(min(max(yl, -1), 1))
-            outR[f] = Float(min(max(yr, -1), 1))
-            outPeak = max(outPeak, abs(outL[f]), abs(outR[f]))
-            if analyzing { analyzerRing[(ringStart + f) & ringMask] = (outL[f] + outR[f]) * 0.5 }
+            for c in 0..<channelCount {
+                let y = Float(min(max(wetScratch[c] * limiterGain, -1), 1))
+                outChannels[c][f] = y
+                outPeak = max(outPeak, abs(y))
+            }
+            if analyzing {
+                // Front left/right (or mono) for the spectrum display.
+                let l = outChannels[0][f], r = channelCount > 1 ? outChannels[1][f] : l
+                analyzerRing[(ringStart + f) & ringMask] = (l + r) * 0.5
+            }
         }
         if analyzing { analyzerWriteIndex.store(ringStart + frames, ordering: .releasing) }
 
@@ -322,38 +364,35 @@ public final class EQProcessor: @unchecked Sendable {
         return list.count << 16 | channels
     }
 
-    private func tapChannels(_ list: UnsafeMutableAudioBufferListPointer) -> (Channel, Channel, Int)? {
-        // Walk buffers from the end until we've collected the tap's channels.
+    /// Index of the first buffer holding the tap's channels (they are the last input streams).
+    private func tapStartBuffer(_ list: UnsafeMutableAudioBufferListPointer) -> Int {
         var collected = 0
-        var startIndex = list.count
-        while startIndex > 0 && collected < tapChannelCount {
-            startIndex -= 1
-            collected += Int(list[startIndex].mNumberChannels)
+        var start = list.count
+        while start > 0 && collected < tapChannelCount {
+            start -= 1
+            collected += Int(list[start].mNumberChannels)
         }
-        guard collected > 0 else { return nil }
-        return channels(list, from: startIndex)
+        return start
     }
 
-    private func firstTwoChannels(_ list: UnsafeMutableAudioBufferListPointer) -> (Channel, Channel, Int)? {
-        channels(list, from: 0)
-    }
-
-    /// First two channels found in buffers starting at `from`, plus the frame count.
-    private func channels(_ list: UnsafeMutableAudioBufferListPointer, from start: Int) -> (Channel, Channel, Int)? {
-        var left: Channel?, right: Channel?
+    /// Fills `dest` with up to `maxChannels` channels from buffers starting at `start`.
+    /// Returns the channel count and the smallest frame count among those buffers.
+    private func collectChannels(_ list: UnsafeMutableAudioBufferListPointer, from start: Int,
+                                 into dest: UnsafeMutableBufferPointer<Channel>) -> (count: Int, frames: Int) {
+        var count = 0
         var frames = Int.max
-        for i in start..<list.count {
+        var i = start
+        while i < list.count && count < Self.maxChannels {
             let buf = list[i]
+            i += 1
             guard let data = buf.mData?.assumingMemoryBound(to: Float.self), buf.mNumberChannels > 0 else { continue }
             let n = Int(buf.mNumberChannels)
             frames = min(frames, Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * n))
-            for c in 0..<n {
-                let ch = Channel(ptr: data + c, stride: n)
-                if left == nil { left = ch } else if right == nil { right = ch }
+            for c in 0..<n where count < Self.maxChannels {
+                dest[count] = Channel(ptr: data + c, stride: n)
+                count += 1
             }
-            if right != nil { break }
         }
-        guard let left, frames != .max else { return nil }
-        return (left, right ?? left, frames)
+        return (count, frames == .max ? 0 : frames)
     }
 }

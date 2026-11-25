@@ -9,6 +9,11 @@ public final class SystemAudioTap {
         case global(excluding: [AudioObjectID])
         /// Only these processes (one app's EQ).
         case processes([AudioObjectID])
+        /// Multichannel: everything (except us and `excluding`) sent to stream 0 of the output
+        /// device, at that stream's full channel count (5.1, 7.1 …) instead of a stereo mixdown.
+        case deviceStream(excluding: [AudioObjectID])
+        /// Multichannel per-app: these processes' audio sent to stream 0 of the output device.
+        case processesOnDevice([AudioObjectID])
     }
 
     public let outputDevice: OutputDevice
@@ -53,6 +58,13 @@ public final class SystemAudioTap {
         case .processes(let ids):
             // Never includes our own process, so no feedback path.
             description = CATapDescription(stereoMixdownOfProcesses: ids)
+        case .deviceStream(let excluding):
+            let ownProcess = try AudioObjectID.processObject(for: getpid())
+            excludedSelf = ownProcess != .unknown
+            description = CATapDescription(excludingProcesses: (excludedSelf ? [ownProcess] : []) + excluding,
+                                           deviceUID: outputDevice.uid, stream: 0)
+        case .processesOnDevice(let ids):
+            description = CATapDescription(processes: ids, deviceUID: outputDevice.uid, stream: 0)
         }
         description.name = "HeyEQQ Tap"
         description.uuid = UUID()

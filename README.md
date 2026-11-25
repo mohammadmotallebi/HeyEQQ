@@ -32,6 +32,16 @@ If you missed it: System Settings › Privacy & Security › Screen & System Aud
 - **Spectrum analyzer**: live output spectrum behind the EQ graph in the Equalizer window (waveform button)
 - Icon: SVG Repo #141491 “equalizer” (`Support/Icon/equalizer.svg`); license not verified — check before distributing
 
+## Surround / multichannel
+
+When the output device is the system default and its first output stream has more than 2 channels
+(5.1, 7.1, 7.1.4 …), HeyEQQ captures that stream at full channel count instead of a stereo mixdown,
+equalizes every channel (incl. LFE) with the same curve, and uses one limiter linked across all
+channels. Stereo content plays on the front pair, as macOS does. No upmixing.
+Limits: up to 16 channels; devices that split channels over several 2-channel streams stay on the
+stereo path. Debug: `defaults write com.heyeqq.app forceDeviceStreamTap -bool YES` forces the
+device-stream capture on any default device.
+
 ## Layout
 
 - `Sources/HeyEQQCore/` — `EQCurve`/`EQBand` (N-band model), `Biquad` (filter math + response), `EqualizerAPO` (AutoEQ import/export), `AudioProcesses` (per-app routing),
