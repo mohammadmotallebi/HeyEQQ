@@ -1,0 +1,8 @@
+# Build products
+.build/
+build/
+*.xcodeproj/xcuserdata/
+.swiftpm/
+
+# macOS
+.DS_Store
