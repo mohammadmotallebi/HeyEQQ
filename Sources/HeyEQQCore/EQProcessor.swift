@@ -37,6 +37,12 @@ public final class EQProcessor: @unchecked Sendable {
     public let balance = Atomic<Int>(0)
     /// When true, the front left/right pair is summed to mono.
     public let mono = Atomic<Bool>(false)
+    /// Output volume in permille (1000 = unchanged, 0 = silent), for per-app volume. Unlike
+    /// balance and mono it also applies while bypassed: it is a mixer setting, not part of the EQ.
+    public let volume = Atomic<Int>(1000)
+    /// Deepest limiter gain * 1000 since last `exchange(1000)`, for the UI's limiter indicator
+    /// (1000 = the limiter did nothing).
+    public let limiterGainMin = Atomic<Int>(1000)
     /// Peak input level * 1000 since last `exchange(0)`, for the meter.
     public let inputPeak = Atomic<Int>(0)
 
@@ -81,6 +87,7 @@ public final class EQProcessor: @unchecked Sendable {
     private var balanceL = 1.0
     private var balanceR = 1.0
     private var monoMix = 0.0
+    private var volumeGain = 1.0
     private var primed = false
 
     public init(sampleRate: Double, tapChannelCount: Int, curve: EQCurve = .flat) {
@@ -306,7 +313,9 @@ public final class EQProcessor: @unchecked Sendable {
         let balanceLTarget = bal > 0 ? 1 - bal : 1.0
         let balanceRTarget = bal < 0 ? 1 + bal : 1.0
         let monoTarget = self.mono.load(ordering: .relaxed) ? 1.0 : 0.0
-        if !primed { balanceL = balanceLTarget; balanceR = balanceRTarget; monoMix = monoTarget }
+        let volumeTarget = Double(min(max(volume.load(ordering: .relaxed), 0), 1000)) / 1000
+        if !primed { balanceL = balanceLTarget; balanceR = balanceRTarget; monoMix = monoTarget; volumeGain = volumeTarget }
+        let volumeFrom = volumeGain
         let balanceLFrom = balanceL, balanceRFrom = balanceR
         let stereoStage = channelCount >= 2
             && (monoMix != 0 || monoTarget != 0 || balanceL != 1 || balanceR != 1 || balanceLTarget != 1 || balanceRTarget != 1)
@@ -355,8 +364,9 @@ public final class EQProcessor: @unchecked Sendable {
 
             // Mix, then one limiter for all channels so the surround balance never shifts.
             var level = 0.0
+            let vol = volumeFrom + (volumeTarget - volumeFrom) * t
             for c in 0..<channelCount {
-                let y = dryScratch[c] * (1 - wet) + wetScratch[c] * pre * wet
+                let y = (dryScratch[c] * (1 - wet) + wetScratch[c] * pre * wet) * vol
                 wetScratch[c] = y
                 level = max(level, abs(y))
             }
@@ -378,12 +388,14 @@ public final class EQProcessor: @unchecked Sendable {
         if analyzing { analyzerWriteIndex.store(ringStart + frames, ordering: .releasing) }
         balanceL = balanceLTarget
         balanceR = balanceRTarget
+        volumeGain = volumeTarget
 
         let p = Int(peak * 1000)
         if p > inputPeak.load(ordering: .relaxed) { inputPeak.store(p, ordering: .relaxed) }
         if p > diagInputPeak.load(ordering: .relaxed) { diagInputPeak.store(p, ordering: .relaxed) }
         let lg = Int(minLimiterGain * 1000)
         if lg < diagLimiterGain.load(ordering: .relaxed) { diagLimiterGain.store(lg, ordering: .relaxed) }
+        if lg < limiterGainMin.load(ordering: .relaxed) { limiterGainMin.store(lg, ordering: .relaxed) }
         let op = Int(outPeak * 1000)
         if op > diagOutputPeak.load(ordering: .relaxed) { diagOutputPeak.store(op, ordering: .relaxed) }
     }

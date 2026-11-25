@@ -9,6 +9,7 @@ struct MenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if let suggestion = model.headphoneSuggestion { suggestionRow(suggestion) }
             soundBar
 
             Picker("Mode", selection: $model.mode) {
@@ -46,7 +47,7 @@ struct MenuView: View {
                 Text("HeyEQQ").font(.title2.weight(.semibold))
                 StatusRow(status: model.status, openSettings: model.openPrivacySettings)
                 if !model.activeApps.isEmpty {
-                    Label("\(model.activeApps.count) app\(model.activeApps.count == 1 ? "" : "s") with their own EQ",
+                    Label("\(model.activeApps.count) app\(model.activeApps.count == 1 ? "" : "s") with their own EQ or volume",
                           systemImage: "square.stack.3d.up")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -58,6 +59,27 @@ struct MenuView: View {
                 .controlSize(.large)
                 .labelsHidden()
         }
+    }
+
+    /// Shown when the active device has no preset yet and matches a headphone in the AutoEQ list.
+    private func suggestionRow(_ suggestion: HeadphoneSuggestion) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "headphones").foregroundStyle(Color.accentColor)
+            Text("A correction curve is available for \(suggestion.deviceName).")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button("Choose…") {
+                model.acceptHeadphoneSuggestion()
+                openWindow(id: EqualizerWindow.windowID)
+                NSApp.activate()
+            }
+            .controlSize(.small)
+            Button { model.dismissHeadphoneSuggestion() } label: { Image(systemName: "xmark") }
+                .buttonStyle(.borderless)
+                .help("Don't suggest this for \(suggestion.deviceName) again")
+        }
+        .card()
     }
 
     // MARK: Sound bar (live spectrum + level, bypass)
@@ -73,10 +95,11 @@ struct MenuView: View {
                     Text("Bypass (compare)")
                 }
                 .toggleStyle(.checkbox)
-                Spacer()
                 Text(model.shortcutText(for: .bypass))
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
+                Spacer()
+                LimiterIndicator(reductionDB: model.limiterReductionDB)
             }
             .disabled(!model.enabled)
         }

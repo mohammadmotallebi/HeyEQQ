@@ -78,6 +78,23 @@ private func stereoPeaks(_ eq: EQProcessor, rightAmplitude: Float = 1, buffers: 
         #expect(moved < steady * 1.5)
     }
 
+    @Test func volumeScalesOutputEvenWhenBypassed() {
+        let p = eq()
+        p.volume.store(500, ordering: .relaxed)
+        #expect(abs(stereoPeaks(p).left - 0.125) < 0.001)
+        p.bypass.store(true, ordering: .relaxed)
+        #expect(abs(stereoPeaks(p).left - 0.125) < 0.001)
+        p.volume.store(0, ordering: .relaxed)
+        #expect(stereoPeaks(p).left < 0.0001)
+    }
+
+    @Test func volumeChangeDoesNotClick() {
+        let p = eq()
+        let steady = stereoPeaks(p).maxJump
+        let moved = stereoPeaks(p, between: { i in if i == 10 { p.volume.store(200, ordering: .relaxed) } }).maxJump
+        #expect(moved < steady * 1.5)
+    }
+
     @Test func bypassIgnoresBalanceAndMono() {
         let p = eq()
         p.balance.store(1000, ordering: .relaxed)
@@ -121,5 +138,11 @@ private func stereoPeaks(_ eq: EQProcessor, rightAmplitude: Float = 1, buffers: 
         #expect(AutoEQIndex.search(entries, query: "770 beyer").first?.name == "Beyerdynamic DT 770 Pro 80 Ohm")
         #expect(AutoEQIndex.search(entries, query: "  ").isEmpty)
         #expect(AutoEQIndex.search(entries, query: "akg").isEmpty)
+    }
+
+    @Test func deviceNameQueryDropsOwnerPrefix() {
+        #expect(AutoEQIndex.query(forDeviceName: "Sam’s AirPods Pro") == "AirPods Pro")
+        #expect(AutoEQIndex.query(forDeviceName: "Sam's WH-1000XM4") == "WH-1000XM4")
+        #expect(AutoEQIndex.query(forDeviceName: "MacBook Pro Speakers") == "MacBook Pro Speakers")
     }
 }

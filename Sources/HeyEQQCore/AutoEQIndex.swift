@@ -36,6 +36,16 @@ public enum AutoEQIndex {
         return entries
     }
 
+    /// Search text for an output device's name: drops an owner prefix such as "Sam’s " so
+    /// "Sam’s AirPods Pro" searches for "AirPods Pro".
+    public static func query(forDeviceName name: String) -> String {
+        var text = name
+        for marker in ["’s ", "'s "] {
+            if let range = text.range(of: marker) { text = String(text[range.upperBound...]) }
+        }
+        return text.trimmingCharacters(in: .whitespaces)
+    }
+
     /// Entries whose name contains every word of `query` (case- and accent-insensitive), names that
     /// start with the query first. An empty query returns nothing.
     public static func search(_ entries: [Entry], query: String, limit: Int = 200) -> [Entry] {

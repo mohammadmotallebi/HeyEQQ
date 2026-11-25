@@ -59,7 +59,10 @@ struct EqualizerWindow: View {
             VStack(spacing: 4) {
                 SpectrumBars(frame: model.level > 0 ? model.spectrum : nil, barCount: 24)
                     .frame(height: 28)
-                LevelMeter(level: model.level)
+                HStack(spacing: 6) {
+                    LevelMeter(level: model.level)
+                    LimiterIndicator(reductionDB: model.limiterReductionDB, compact: true)
+                }
             }
             .frame(width: 140)
 

@@ -66,7 +66,14 @@ struct HeadphoneSearchSheet: View {
     let onImported: (String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
+    @State private var query: String
+
+    init(model: AppModel, catalog: HeadphoneCatalog, initialQuery: String = "", onImported: @escaping (String?) -> Void) {
+        self.model = model
+        self.catalog = catalog
+        self.onImported = onImported
+        _query = State(initialValue: initialQuery)
+    }
     @State private var selection: AutoEQIndex.Entry.ID?
     @State private var importing = false
     @State private var errorText: String?

@@ -17,7 +17,6 @@ struct ExpertEQView: View {
     @State private var draftName = ""
     @State private var alertMessage: String?
     @State private var showingHeadphoneSearch = false
-    @State private var headphones = HeadphoneCatalog()
 
     private var curve: EQCurve { model.expertCurve }
 
@@ -41,11 +40,19 @@ struct ExpertEQView: View {
                 PerAppView(model: model)
             }
         }
-        .sheet(isPresented: $showingHeadphoneSearch) {
-            HeadphoneSearchSheet(model: model, catalog: headphones) { note in
+        .sheet(isPresented: $showingHeadphoneSearch, onDismiss: { model.headphoneSearchRequest = nil }) {
+            let request = model.headphoneSearchRequest
+            HeadphoneSearchSheet(model: model, catalog: model.headphones, initialQuery: request?.query ?? "") { note in
                 selected = nil
+                tab = .bands
+                // Opened for a device: the imported curve becomes that device's preset.
+                model.finishHeadphoneImport(for: request)
                 alertMessage = note
             }
+        }
+        .onAppear { if model.headphoneSearchRequest != nil { showingHeadphoneSearch = true } }
+        .onChange(of: model.headphoneSearchRequest) { _, request in
+            if request != nil { showingHeadphoneSearch = true }
         }
         .alert("Save Curve", isPresented: $showingSave) {
             TextField("Name", text: $draftName)

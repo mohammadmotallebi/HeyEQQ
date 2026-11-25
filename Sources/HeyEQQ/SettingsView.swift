@@ -58,9 +58,17 @@ struct SettingsView: View {
                     }
                     Toggle("Show the live spectrum behind the EQ curve", isOn: $model.showAnalyzer)
                         .toggleStyle(.checkbox)
+                    Toggle("Suggest a headphone curve when a new output device connects", isOn: $model.suggestHeadphoneCurves)
+                        .toggleStyle(.checkbox)
+                    Text("To check for a match, HeyEQQ downloads the public AutoEQ headphone list from GitHub. Device names never leave your Mac.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 HStack {
+                    Text("HeyEQQ \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Spacer()
                     Button("Done") { model.showingSettings = false }
                         .keyboardShortcut(.defaultAction)

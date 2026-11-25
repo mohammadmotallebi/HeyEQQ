@@ -124,15 +124,20 @@ private func eq(_ curve: EQCurve, sampleRate: Double = 48_000) -> EQProcessor {
     }
 
     @Test func limiterPreventsClipping() {
-        let r = run(eq(.simple([12, 0, 12])), freq: 50, amplitude: 0.9, buffers: 60)
+        let p = eq(.simple([12, 0, 12]))
+        let r = run(p, freq: 50, amplitude: 0.9, buffers: 60)
         #expect(!r.hasNaN)
         #expect(r.peak <= Float(EQProcessor.limiterCeiling) + 1e-4)
+        // The UI indicator's value reports the reduction and resets when read.
+        #expect(p.limiterGainMin.exchange(1000, ordering: .relaxed) < 500)
+        #expect(p.limiterGainMin.load(ordering: .relaxed) == 1000)
     }
 
     @Test func quietAudioIsNotLimited() {
         let p = eq(.flat)
         _ = run(p, freq: 1_000, amplitude: 0.5)
         #expect(p.diagLimiterGain.load(ordering: .relaxed) == 1000)
+        #expect(p.limiterGainMin.load(ordering: .relaxed) == 1000)
     }
 
     @Test func unsafeValuesAreSanitized() {

@@ -7,7 +7,7 @@ struct PerAppView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Give apps their own EQ. Apps on “Main EQ” use the curve of the current mode; “No EQ” plays an app untouched.")
+            Text("Give apps their own EQ and volume. Apps on “Main EQ” use the curve of the current mode; “No EQ” plays an app untouched.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -51,6 +51,18 @@ private struct AppRow: View {
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
+            Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.1.fill")
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Slider(value: Binding(get: { volume },
+                                  set: { model.setAppVolume($0, for: app.bundleID, name: app.name) }), in: 0...1)
+                .frame(width: 110)
+                .help("Volume of \(app.name) (right-click to reset)")
+                .contextMenu { Button("Reset to 100%") { model.setAppVolume(1, for: app.bundleID, name: app.name) } }
+            Text("\(Int((volume * 100).rounded()))%")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(volume < 1 ? .primary : .secondary)
+                .frame(width: 42, alignment: .trailing)
             Picker("EQ for \(app.name)", selection: Binding(
                 get: { model.appRules[app.bundleID] },
                 set: { model.setAppRule($0, for: app.bundleID, name: app.name) }
@@ -61,14 +73,16 @@ private struct AppRow: View {
                 ForEach(model.expertPresets) { p in Text(p.name).tag(Optional(p.id)) }
             }
             .labelsHidden()
-            .frame(width: 210)
+            .frame(width: 190)
         }
         .padding(.vertical, 2)
     }
 
+    private var volume: Double { model.appVolumes[app.bundleID] ?? 1 }
+
     private var statusText: String {
         var parts: [String] = [app.isPlaying ? "Playing" : app.isRunning ? "Idle" : "Not running"]
-        if model.activeApps.contains(app.bundleID) { parts.append("own EQ active") }
+        if model.activeApps.contains(app.bundleID) { parts.append("own settings active") }
         return parts.joined(separator: " · ")
     }
 }

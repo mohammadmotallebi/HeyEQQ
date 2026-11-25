@@ -17,6 +17,21 @@ struct DeviceAssignment: Codable, Hashable {
     var presetID: String
 }
 
+/// A hint that the active output device has a headphone correction curve available.
+struct HeadphoneSuggestion: Equatable {
+    let deviceUID: String
+    let deviceName: String
+    /// What to search for (the device name without an owner prefix).
+    let query: String
+}
+
+/// Asks the Equalizer window to open the headphone search, optionally for a device.
+struct HeadphoneSearchRequest: Equatable {
+    var query: String
+    /// When set, the imported curve becomes this device's preset.
+    var deviceUID: String?
+}
+
 /// Things a global keyboard shortcut can do.
 enum ShortcutAction: String, CaseIterable, Identifiable, Codable {
     case bypass, nextPreset, previousPreset
@@ -48,6 +63,9 @@ final class AppModel {
         static let showAnalyzer = "showAnalyzer"
         static let deviceAssignmentsV2 = "deviceAssignmentsV2"
         static let shortcuts = "shortcuts"
+        static let appVolumes = "appVolumes"
+        static let suggestHeadphones = "suggestHeadphones"
+        static let handledSuggestions = "handledSuggestions"
         static let balance = "balance"
         static let mono = "mono"
     }
@@ -108,8 +126,26 @@ final class AppModel {
     /// Whether the Equalizer window shows the settings pane instead of the editor (not persisted).
     var showingSettings = false
 
+    /// The headphone list (AutoEQ), shared by the search sheet and the new-device suggestion.
+    let headphones = HeadphoneCatalog()
+    /// When a new output device looks like a headphone with a correction curve, offer it.
+    /// Checking downloads the public headphone list from GitHub (cached for a week).
+    var suggestHeadphoneCurves: Bool {
+        didSet {
+            defaults.set(suggestHeadphoneCurves, forKey: Key.suggestHeadphones)
+            if suggestHeadphoneCurves { checkHeadphoneSuggestion() } else { headphoneSuggestion = nil }
+        }
+    }
+    private(set) var headphoneSuggestion: HeadphoneSuggestion?
+    /// Set to make the Equalizer window open the headphone search (cleared when it closes).
+    var headphoneSearchRequest: HeadphoneSearchRequest?
+    /// Devices whose suggestion was dismissed or used.
+    @ObservationIgnored private var handledSuggestions: Set<String>
+
     /// Per-app EQ: app bundle ID → `AppRule.noEQ` or an Expert curve id.
     private(set) var appRules: [String: String]
+    /// Per-app volume: app bundle ID → 0…1. Apps without an entry play at full volume.
+    private(set) var appVolumes: [String: Double]
     /// Display names for apps with rules (so they can be shown while not running).
     private(set) var appRuleNames: [String: String]
     /// Apps currently connected to the audio system.
@@ -134,6 +170,9 @@ final class AppModel {
     private(set) var devices: [OutputDevice] = []
     /// Smoothed input level, 0...1 on a dB scale.
     private(set) var level: Double = 0
+    /// How far the limiter is turning peaks down right now, in dB (0 = not limiting). Falls back
+    /// slowly so short peaks stay visible.
+    private(set) var limiterReductionDB: Double = 0
 
     @ObservationIgnored private let engine = EQEngine()
     @ObservationIgnored private let defaults = UserDefaults.standard
@@ -161,6 +200,9 @@ final class AppModel {
         userExpertPresets = JSONFileStore.load([ExpertPreset].self, from: Self.expertPresetsFile) ?? []
         appRules = defaults.dictionary(forKey: Key.appRules) as? [String: String] ?? [:]
         appRuleNames = defaults.dictionary(forKey: Key.appRuleNames) as? [String: String] ?? [:]
+        appVolumes = defaults.dictionary(forKey: Key.appVolumes) as? [String: Double] ?? [:]
+        suggestHeadphoneCurves = defaults.object(forKey: Key.suggestHeadphones) as? Bool ?? true
+        handledSuggestions = Set(defaults.stringArray(forKey: Key.handledSuggestions) ?? [])
         showAnalyzer = defaults.object(forKey: Key.showAnalyzer) as? Bool ?? true
         if let data = defaults.data(forKey: Key.deviceAssignmentsV2),
            let stored = try? JSONDecoder().decode([String: DeviceAssignment].self, from: data) {
@@ -359,7 +401,11 @@ final class AppModel {
     }
     var advancedCurve: EQCurve { .graphic(advancedGains, preampDB: advancedPreamp) }
 
-    private func pushCurve() { engine.setCurve(activeCurve) }
+    private func pushCurve() {
+        engine.setCurve(activeCurve)
+        // Apps with only a volume have their own pipeline that must follow the main curve.
+        if appVolumes.keys.contains(where: { appRules[$0] == nil }) { pushAppRules() }
+    }
 
     private static func snap(_ db: Double, to range: ClosedRange<Double>) -> Double {
         min(max((db * 2).rounded() / 2, range.lowerBound), range.upperBound) // 0.5 dB steps
@@ -544,28 +590,55 @@ final class AppModel {
     /// nil = use the main EQ; `AppRule.noEQ`; or an Expert curve id.
     func setAppRule(_ rule: String?, for bundleID: String, name: String?) {
         appRules[bundleID] = rule
-        if rule == nil { appRuleNames[bundleID] = nil } else if let name { appRuleNames[bundleID] = name }
+        rememberName(name, for: bundleID)
         defaults.set(appRules, forKey: Key.appRules)
-        defaults.set(appRuleNames, forKey: Key.appRuleNames)
         pushAppRules()
     }
 
+    /// 0…1; full volume (1) removes the entry.
+    func setAppVolume(_ volume: Double, for bundleID: String, name: String?) {
+        let value = (min(max(volume, 0), 1) * 100).rounded() / 100
+        guard value != (appVolumes[bundleID] ?? 1) else { return }
+        appVolumes[bundleID] = value >= 1 ? nil : value
+        rememberName(name, for: bundleID)
+        defaults.set(appVolumes, forKey: Key.appVolumes)
+        pushAppRules()
+    }
+
+    /// Keeps a display name for apps that have an EQ rule or a volume, and drops it otherwise.
+    private func rememberName(_ name: String?, for bundleID: String) {
+        if appRules[bundleID] == nil && appVolumes[bundleID] == nil {
+            appRuleNames[bundleID] = nil
+        } else if let name {
+            appRuleNames[bundleID] = name
+        }
+        defaults.set(appRuleNames, forKey: Key.appRuleNames)
+    }
+
+    /// Apps with an EQ rule and/or a volume get their own pipeline.
     private func pushAppRules() {
-        var curves: [String: EQCurve] = [:]
-        for (app, rule) in appRules {
-            if rule == AppRule.noEQ {
-                curves[app] = .flat
-            } else if let preset = expertPresets.first(where: { $0.id == rule }) {
-                curves[app] = preset.curve
+        var rules: [String: EQEngine.AppRule] = [:]
+        for app in Set(appRules.keys).union(appVolumes.keys) {
+            let volume = appVolumes[app] ?? 1
+            if let rule = appRules[app] {
+                if rule == AppRule.noEQ {
+                    rules[app] = EQEngine.AppRule(curve: .flat, volume: volume)
+                } else if let preset = expertPresets.first(where: { $0.id == rule }) {
+                    rules[app] = EQEngine.AppRule(curve: preset.curve, volume: volume)
+                } else if volume < 1 {
+                    rules[app] = EQEngine.AppRule(curve: activeCurve, volume: volume) // curve was deleted
+                }
+            } else if volume < 1 {
+                rules[app] = EQEngine.AppRule(curve: activeCurve, volume: volume) // Main EQ, own volume
             }
         }
-        engine.setAppRules(curves)
+        engine.setAppRules(rules)
     }
 
     /// Running apps using audio, plus apps with rules that aren't running (for the per-app list).
     var perAppList: [AudioApp] {
         var list = audioApps
-        for (bundleID, _) in appRules where !list.contains(where: { $0.bundleID == bundleID }) {
+        for bundleID in Set(appRules.keys).union(appVolumes.keys) where !list.contains(where: { $0.bundleID == bundleID }) {
             list.append(AudioApp(bundleID: bundleID, name: appRuleNames[bundleID] ?? bundleID,
                                  icon: nil, isPlaying: false, isRunning: false))
         }
@@ -629,6 +702,51 @@ final class AppModel {
         guard case .running(let device) = newStatus, device.uid != lastDeviceUID else { return }
         lastDeviceUID = device.uid
         if let assignment = assignment(forDevice: device.uid) { apply(assignment) }
+        checkHeadphoneSuggestion()
+    }
+
+    // MARK: - Headphone suggestion for new devices
+
+    /// Offers a correction curve when the active device has no preset yet and its name matches
+    /// a headphone in the AutoEQ list.
+    private func checkHeadphoneSuggestion() {
+        headphoneSuggestion = nil
+        guard suggestHeadphoneCurves, let device = currentDevice,
+              assignment(forDevice: device.uid) == nil, !handledSuggestions.contains(device.uid) else { return }
+        let query = AutoEQIndex.query(forDeviceName: device.name)
+        Task {
+            await headphones.load()
+            guard currentDevice?.uid == device.uid, suggestHeadphoneCurves,
+                  !AutoEQIndex.search(headphones.entries, query: query, limit: 1).isEmpty else { return }
+            headphoneSuggestion = HeadphoneSuggestion(deviceUID: device.uid, deviceName: device.name, query: query)
+        }
+    }
+
+    /// Don't offer a curve for this device again.
+    func dismissHeadphoneSuggestion() {
+        guard let suggestion = headphoneSuggestion else { return }
+        markSuggestionHandled(suggestion.deviceUID)
+    }
+
+    /// Opens the headphone search in the Equalizer window (Expert mode) for the suggested device.
+    func acceptHeadphoneSuggestion() {
+        guard let suggestion = headphoneSuggestion else { return }
+        mode = .expert
+        showingSettings = false
+        headphoneSearchRequest = HeadphoneSearchRequest(query: suggestion.query, deviceUID: suggestion.deviceUID)
+    }
+
+    /// After a headphone import: makes the imported curve the device's preset.
+    func finishHeadphoneImport(for request: HeadphoneSearchRequest?) {
+        guard let uid = request?.deviceUID, let preset = activeExpertPreset else { return }
+        assign(DeviceAssignment(mode: .expert, presetID: preset.id), toDevice: uid)
+        markSuggestionHandled(uid)
+    }
+
+    private func markSuggestionHandled(_ uid: String) {
+        handledSuggestions.insert(uid)
+        defaults.set(Array(handledSuggestions), forKey: Key.handledSuggestions)
+        if headphoneSuggestion?.deviceUID == uid { headphoneSuggestion = nil }
     }
 
     // MARK: - System
@@ -672,6 +790,7 @@ final class AppModel {
         meterTimer?.invalidate()
         meterTimer = nil
         level = 0
+        limiterReductionDB = 0
     }
 
     private func tickMeter() {
@@ -680,5 +799,10 @@ final class AppModel {
         // Map -60...0 dBFS to 0...1, fast attack / slow release.
         let target = peak > 0 ? max(0, 1 + 20 * log10(peak) / 60) : 0
         level = target > level ? target : max(target, level - 0.03)
+
+        let gain = engine.takeLimiterGain()
+        let reduction = gain < 0.995 ? -20 * log10(max(gain, 0.001)) : 0
+        let next = max(reduction, limiterReductionDB - 0.25)
+        if next != limiterReductionDB { limiterReductionDB = next < 0.05 ? 0 : next }
     }
 }

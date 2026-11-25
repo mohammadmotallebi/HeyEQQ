@@ -13,6 +13,17 @@ import os
 ///
 /// All pipeline work happens on a private serial queue. Callbacks are delivered on the main queue.
 public final class EQEngine: @unchecked Sendable {
+    /// What an app with its own pipeline gets: a curve and a volume (0…1).
+    public struct AppRule: Equatable, Sendable {
+        public var curve: EQCurve
+        public var volume: Double
+        public init(curve: EQCurve, volume: Double = 1) {
+            self.curve = curve
+            self.volume = min(max(volume, 0), 1)
+        }
+        var volumePermille: Int { Int((volume * 1000).rounded()) }
+    }
+
     public enum Status: Equatable, Sendable {
         case off
         case starting
@@ -40,7 +51,7 @@ public final class EQEngine: @unchecked Sendable {
     private var balancePermille = 0
     private var monoOn = false
     private var curve = EQCurve.flat
-    private var appRules: [String: EQCurve] = [:]
+    private var appRules: [String: AppRule] = [:]
     private var preferredUID: String?
     private var mainPipeline: SystemAudioTap?
     /// Whether the running pipelines capture the device stream at full channel count.
@@ -77,15 +88,18 @@ public final class EQEngine: @unchecked Sendable {
         }
     }
 
-    /// Per-app curves keyed by app bundle ID. Apps without a rule use the main curve.
-    public func setAppRules(_ rules: [String: EQCurve]) {
+    /// Per-app curve and volume keyed by app bundle ID. Apps without a rule go through the main pipeline.
+    public func setAppRules(_ rules: [String: AppRule]) {
         queue.async {
             let appsChanged = Set(rules.keys) != Set(self.appRules.keys)
             self.appRules = rules
             if appsChanged {
                 if self.enabled { self.rebuild() }
             } else {
-                for (app, pipeline) in self.appPipelines { pipeline.processor?.setCurve(rules[app] ?? .flat) }
+                for (app, pipeline) in self.appPipelines {
+                    pipeline.processor?.setCurve(rules[app]?.curve ?? .flat)
+                    pipeline.processor?.volume.store(rules[app]?.volumePermille ?? 1000, ordering: .relaxed)
+                }
             }
         }
     }
@@ -148,6 +162,14 @@ public final class EQEngine: @unchecked Sendable {
         let all = processors.withLock { $0 }
         let p = all.map { $0.inputPeak.exchange(0, ordering: .relaxed) }.max() ?? 0
         return Double(p) / 1000
+    }
+
+    /// Deepest limiter gain (1 = not limiting, 0.5 = peaks turned down by half) across all
+    /// pipelines since the last call.
+    public func takeLimiterGain() -> Double {
+        let all = processors.withLock { $0 }
+        let g = all.map { $0.limiterGainMin.exchange(1000, ordering: .relaxed) }.min() ?? 1000
+        return Double(g) / 1000
     }
 
     /// Stops processing and restores normal system audio. Waits up to `timeout` seconds.
@@ -218,10 +240,11 @@ public final class EQEngine: @unchecked Sendable {
         log.notice("running on \(device.name, privacy: .public) [\(device.uid, privacy: .public)] rate=\(main.processor?.sampleRate ?? 0) deviceCh=\(device.outputChannels) tapCh=\(main.processor?.tapChannelCount ?? 0) multichannel=\(multichannel) excludedSelf=\(main.excludedSelf) appPipelines=\(routes.count)")
 
         for (app, ids) in routes.sorted(by: { $0.key < $1.key }) {
-            let pipeline = SystemAudioTap(outputDevice: device, curve: appRules[app] ?? .flat,
+            let pipeline = SystemAudioTap(outputDevice: device, curve: appRules[app]?.curve ?? .flat,
                                           target: multichannel ? .processesOnDevice(ids) : .processes(ids))
             do {
                 try pipeline.start()
+                pipeline.processor?.volume.store(appRules[app]?.volumePermille ?? 1000, ordering: .relaxed)
                 appPipelines[app] = pipeline
                 routedProcesses[app] = ids
                 log.notice("app pipeline \(app, privacy: .public) processes=\(ids.count)")

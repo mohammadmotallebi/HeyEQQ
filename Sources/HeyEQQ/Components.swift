@@ -277,6 +277,32 @@ extension View {
     }
 }
 
+/// Lights up while the limiter is turning peaks down, with how much. `compact` shows only the dot.
+struct LimiterIndicator: View {
+    let reductionDB: Double
+    var compact = false
+
+    private var active: Bool { reductionDB > 0 }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(active ? Color.orange : Color.primary.opacity(0.18))
+                .frame(width: 7, height: 7)
+            if !compact {
+                Text(active ? String(format: "Limiting −%.1f dB", reductionDB) : "Limiter idle")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(active ? Color.orange : Color.secondary)
+            }
+        }
+        .help(active
+            ? String(format: "Your boosts push peaks past full scale, so the limiter is turning them down by %.1f dB to prevent distortion. Lower the preamp or the boosts to stop this.", reductionDB)
+            : "The limiter only steps in when boosted peaks would clip. Right now it isn't needed.")
+        .accessibilityElement()
+        .accessibilityLabel(active ? String(format: "Limiter reducing by %.1f decibels", reductionDB) : "Limiter idle")
+    }
+}
+
 struct LevelMeter: View {
     let level: Double
 
