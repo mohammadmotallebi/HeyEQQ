@@ -5,6 +5,7 @@
 #   SIGN_IDENTITY="<sha1 or name>" scripts/build-app.sh   # override identity
 #   scripts/build-app.sh --open                           # build, then (re)launch
 #   scripts/build-app.sh --install                        # build, copy to /Applications, launch from there
+#   HARDENED_RUNTIME=1 SIGN_IDENTITY=... scripts/build-app.sh  # hardened runtime + timestamp (used by release.sh)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -20,7 +21,12 @@ cp Support/AppIcon.icns Support/MenuBarIcon.png Support/MenuBarIcon@2x.png "$APP
 
 IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/Apple Development/ {print $2; exit}')}"
 if [[ -n "$IDENTITY" ]]; then
-  codesign --force --sign "$IDENTITY" "$APP"
+  if [[ "${HARDENED_RUNTIME:-0}" == 1 ]]; then
+    codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+      --entitlements Support/HeyEQQ.entitlements "$APP"
+  else
+    codesign --force --sign "$IDENTITY" "$APP"
+  fi
   echo "Signed with $IDENTITY"
 else
   codesign --force --sign - "$APP"
