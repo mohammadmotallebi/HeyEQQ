@@ -37,6 +37,8 @@ public final class EQEngine: @unchecked Sendable {
     private var enabled = false
     private var bypassed = false
     private var analyzerOn = false
+    private var balancePermille = 0
+    private var monoOn = false
     private var curve = EQCurve.flat
     private var appRules: [String: EQCurve] = [:]
     private var preferredUID: String?
@@ -94,6 +96,22 @@ public final class EQEngine: @unchecked Sendable {
             self.bypassed = on
             self.log.notice("bypass \(on ? "on" : "off")")
             for p in self.processors.withLock({ $0 }) { p.bypass.store(on, ordering: .relaxed) }
+        }
+    }
+
+    /// Left/right balance, -1 (left only) … 0 … +1 (right only), on every pipeline.
+    public func setBalance(_ value: Double) {
+        queue.async {
+            self.balancePermille = Int((min(max(value, -1), 1) * 1000).rounded())
+            for p in self.processors.withLock({ $0 }) { p.balance.store(self.balancePermille, ordering: .relaxed) }
+        }
+    }
+
+    /// Sums left and right to mono on every pipeline.
+    public func setMono(_ on: Bool) {
+        queue.async {
+            self.monoOn = on
+            for p in self.processors.withLock({ $0 }) { p.mono.store(on, ordering: .relaxed) }
         }
     }
 
@@ -218,6 +236,8 @@ public final class EQEngine: @unchecked Sendable {
         for p in active {
             p.bypass.store(bypassed, ordering: .relaxed)
             p.analyzerEnabled.store(analyzerOn, ordering: .relaxed)
+            p.balance.store(balancePermille, ordering: .relaxed)
+            p.mono.store(monoOn, ordering: .relaxed)
         }
         processors.withLock { $0 = active }
         watchActiveDevice(device)

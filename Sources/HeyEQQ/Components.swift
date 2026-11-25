@@ -110,6 +110,8 @@ func bandColor(_ index: Int) -> Color {
 struct SpectrumFrame: Equatable {
     let frequencies: [Double]
     let levelsDB: [Float]
+    /// Recent highest level per band (peak hold); same count as `levelsDB`, or empty.
+    var peaksDB: [Float] = []
 }
 
 extension EnvironmentValues {
@@ -232,11 +234,19 @@ struct SpectrumBars: View {
             let shading = GraphicsContext.Shading.linearGradient(
                 Gradient(colors: [.accentColor, .cyan, .mint]),
                 startPoint: CGPoint(x: 0, y: size.height), endPoint: .zero)
+            let peaks = barLevels(frame?.peaksDB ?? [])
             for i in 0..<barCount {
+                let x = CGFloat(i) * (width + gap)
                 let height = max(rest, levels[i] * size.height)
-                let bar = CGRect(x: CGFloat(i) * (width + gap), y: size.height - height, width: width, height: height)
+                let bar = CGRect(x: x, y: size.height - height, width: width, height: height)
                 ctx.fill(Path(roundedRect: bar, cornerRadius: min(width / 2, 2)),
                          with: levels[i] > 0 ? shading : .color(Color.primary.opacity(0.18)))
+                // Peak-hold cap: a thin line that lingers above the bar, then falls.
+                let peakHeight = peaks[i] * size.height
+                if peakHeight > height + 3 {
+                    ctx.fill(Path(CGRect(x: x, y: size.height - peakHeight, width: width, height: 1.5)),
+                             with: .color(Color.primary.opacity(0.55)))
+                }
             }
         }
         .accessibilityElement()
@@ -244,13 +254,15 @@ struct SpectrumBars: View {
     }
 
     /// 0...1 per bar: the loudest analyzer band in each bar's slice, −85…−10 dBFS.
-    private func barLevels() -> [CGFloat] {
-        guard let frame, !frame.levelsDB.isEmpty else { return Array(repeating: 0, count: barCount) }
-        let bands = frame.levelsDB.count
+    private func barLevels() -> [CGFloat] { barLevels(frame?.levelsDB ?? []) }
+
+    private func barLevels(_ values: [Float]) -> [CGFloat] {
+        guard !values.isEmpty else { return Array(repeating: 0, count: barCount) }
+        let bands = values.count
         return (0..<barCount).map { i in
-            let lo = i * bands / barCount
+            let lo = min(i * bands / barCount, bands - 1)
             let hi = max((i + 1) * bands / barCount, lo + 1)
-            let db = frame.levelsDB[lo..<min(hi, bands)].max() ?? -100
+            let db = values[lo..<min(hi, bands)].max() ?? -100
             return CGFloat(min(max((Double(db) + 85) / 75, 0), 1))
         }
     }

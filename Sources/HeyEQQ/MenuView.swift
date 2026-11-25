@@ -34,10 +34,10 @@ struct MenuView: View {
         .padding(16)
         .frame(width: 420)
         .onAppear {
-            model.startMetering(); model.startSpectrumBars()
-            model.refreshDevices(); model.refreshLaunchAtLogin()
+            model.startMetering(); model.startSpectrum()
+            model.refreshDevices()
         }
-        .onDisappear { model.stopSpectrumBars(); model.stopMetering() }
+        .onDisappear { model.stopSpectrum(); model.stopMetering() }
     }
 
     private var header: some View {
@@ -66,7 +66,7 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 8) {
             // The input peak falls to 0 when nothing plays, which also clears a stale last frame.
             SpectrumBars(frame: model.level > 0 ? model.spectrum : nil)
-                .frame(height: 48)
+                .frame(height: 42)
             LevelMeter(level: model.level)
             HStack {
                 Toggle(isOn: Binding(get: { model.bypassed }, set: { model.setBypass($0) })) {
@@ -74,7 +74,7 @@ struct MenuView: View {
                 }
                 .toggleStyle(.checkbox)
                 Spacer()
-                Text(model.hotKeyAvailable ? GlobalHotKey.bypassDisplay : "shortcut in use")
+                Text(model.shortcutText(for: .bypass))
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
@@ -83,7 +83,7 @@ struct MenuView: View {
         .card()
     }
 
-    // MARK: Output, launch at login
+    // MARK: Output, per-device preset, balance / mono
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -94,10 +94,18 @@ struct MenuView: View {
                     Text(device.name).tag(Optional(device.uid))
                 }
             }
-            Toggle("Launch at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
-                .toggleStyle(.checkbox)
-            if let error = model.launchAtLoginError {
-                Text(error).font(.caption).foregroundStyle(.red)
+            if let device = model.currentDevice {
+                HStack {
+                    Text("On this device, use")
+                    Spacer()
+                    DevicePresetPicker(model: model, device: device)
+                }
+            }
+            HStack(spacing: 10) {
+                Text("Balance")
+                BalanceControl(model: model)
+                Toggle("Mono", isOn: $model.mono)
+                    .toggleStyle(.checkbox)
             }
         }
         .card()
@@ -113,6 +121,14 @@ struct MenuView: View {
                 }
             }
             Spacer()
+            Button {
+                model.showingSettings = true
+                openWindow(id: EqualizerWindow.windowID)
+                NSApp.activate()
+            } label: {
+                Label("Settings…", systemImage: "gearshape")
+            }
+            .help("Shortcuts, per-device presets, launch at login")
             Button("Quit HeyEQQ") { model.quit() }
                 .keyboardShortcut("q")
         }
@@ -128,6 +144,7 @@ struct MenuView: View {
 
     private var openEqualizerButton: some View {
         Button {
+            model.showingSettings = false
             openWindow(id: EqualizerWindow.windowID)
             NSApp.activate()
         } label: {
@@ -209,7 +226,7 @@ struct MenuView: View {
                 .fixedSize()
             }
             ResponseCurveView(curve: curve, rangeDB: 18, showsBandCurves: true, showsBandMarkers: true)
-                .frame(height: 130)
+                .frame(height: 120)
             bandList(curve)
             openEqualizerButton
         }

@@ -3,11 +3,30 @@ import HeyEQQCore
 import Observation
 import ServiceManagement
 
-enum EQMode: String, CaseIterable, Identifiable {
+enum EQMode: String, CaseIterable, Identifiable, Codable {
     case simple, advanced, expert
     var id: String { rawValue }
     var label: String {
         switch self { case .simple: "Simple"; case .advanced: "Advanced"; case .expert: "Expert" }
+    }
+}
+
+/// What an output device switches to when it becomes active: a mode and one of that mode's presets.
+struct DeviceAssignment: Codable, Hashable {
+    var mode: EQMode
+    var presetID: String
+}
+
+/// Things a global keyboard shortcut can do.
+enum ShortcutAction: String, CaseIterable, Identifiable, Codable {
+    case bypass, nextPreset, previousPreset
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .bypass: "Bypass (compare)"
+        case .nextPreset: "Next preset"
+        case .previousPreset: "Previous preset"
+        }
     }
 }
 
@@ -27,6 +46,10 @@ final class AppModel {
         static let appRules = "appRules"
         static let appRuleNames = "appRuleNames"
         static let showAnalyzer = "showAnalyzer"
+        static let deviceAssignmentsV2 = "deviceAssignmentsV2"
+        static let shortcuts = "shortcuts"
+        static let balance = "balance"
+        static let mono = "mono"
     }
 
     static let simpleBandLabels = ["Bass", "Mid", "Treble"]
@@ -60,8 +83,30 @@ final class AppModel {
     private(set) var userPresets: [Preset]
     private(set) var expertCurve: EQCurve
     private(set) var userExpertPresets: [ExpertPreset]
-    /// Output device UID → Advanced preset id, applied when that device becomes active.
-    private(set) var deviceAssignments: [String: String]
+    /// Output device UID → mode + preset, applied when that device becomes active.
+    private(set) var deviceAssignments: [String: DeviceAssignment]
+
+    /// Left/right balance, -1 (left only) … 0 … +1 (right only).
+    var balance: Double {
+        didSet {
+            defaults.set(balance, forKey: Key.balance)
+            engine.setBalance(balance)
+        }
+    }
+    /// Sums left and right to mono.
+    var mono: Bool {
+        didSet {
+            defaults.set(mono, forKey: Key.mono)
+            engine.setMono(mono)
+        }
+    }
+
+    /// Global keyboard shortcuts. An action without an entry has no shortcut.
+    private(set) var shortcuts: [ShortcutAction: Shortcut]
+    /// Actions whose shortcut couldn't be registered because another app already uses it.
+    private(set) var unavailableShortcuts: Set<ShortcutAction> = []
+    /// Whether the Equalizer window shows the settings pane instead of the editor (not persisted).
+    var showingSettings = false
 
     /// Per-app EQ: app bundle ID → `AppRule.noEQ` or an Expert curve id.
     private(set) var appRules: [String: String]
@@ -72,16 +117,12 @@ final class AppModel {
     /// Apps currently equalized by their own pipeline.
     private(set) var activeApps: Set<String> = []
 
-    /// A/B: audio passes unprocessed (toggled with ⌥⌘E). Not persisted.
+    /// A/B: audio passes unprocessed (toggled with the bypass shortcut). Not persisted.
     private(set) var bypassed = false
-    /// False if ⌥⌘E is already used by another app.
-    private(set) var hotKeyAvailable = true
 
+    /// Whether the Equalizer window draws the live spectrum behind the EQ curve.
     var showAnalyzer: Bool {
-        didSet {
-            defaults.set(showAnalyzer, forKey: Key.showAnalyzer)
-            updateAnalyzer()
-        }
+        didSet { defaults.set(showAnalyzer, forKey: Key.showAnalyzer) }
     }
     /// Latest analyzer frame while a view showing it is open.
     private(set) var spectrum: SpectrumFrame?
@@ -98,10 +139,12 @@ final class AppModel {
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private var meterTimer: Timer?
     @ObservationIgnored private var lastDeviceUID: String?
-    @ObservationIgnored private var hotKey: GlobalHotKey?
+    @ObservationIgnored private var hotKeys: [GlobalHotKey] = []
+    @ObservationIgnored private var shortcutsSuspended = false
     @ObservationIgnored private let analyzer = SpectrumAnalyzer()
-    @ObservationIgnored private var analyzerClients = 0
-    @ObservationIgnored private var spectrumBarClients = 0
+    @ObservationIgnored private var spectrumClients = 0
+    @ObservationIgnored private var peakHoldDB: [Float] = []
+    @ObservationIgnored private var peakHoldAge: [Int] = []
 
     init() {
         enabled = defaults.object(forKey: Key.enabled) as? Bool ?? true
@@ -119,7 +162,22 @@ final class AppModel {
         appRules = defaults.dictionary(forKey: Key.appRules) as? [String: String] ?? [:]
         appRuleNames = defaults.dictionary(forKey: Key.appRuleNames) as? [String: String] ?? [:]
         showAnalyzer = defaults.object(forKey: Key.showAnalyzer) as? Bool ?? true
-        deviceAssignments = defaults.dictionary(forKey: Key.deviceAssignments) as? [String: String] ?? [:]
+        if let data = defaults.data(forKey: Key.deviceAssignmentsV2),
+           let stored = try? JSONDecoder().decode([String: DeviceAssignment].self, from: data) {
+            deviceAssignments = stored
+        } else {
+            // Before per-device presets worked in every mode, they were Advanced preset ids.
+            let old = defaults.dictionary(forKey: Key.deviceAssignments) as? [String: String] ?? [:]
+            deviceAssignments = old.mapValues { DeviceAssignment(mode: .advanced, presetID: $0) }
+        }
+        balance = min(max(defaults.double(forKey: Key.balance), -1), 1)
+        mono = defaults.bool(forKey: Key.mono)
+        if let data = defaults.data(forKey: Key.shortcuts),
+           let stored = try? JSONDecoder().decode([ShortcutAction: Shortcut].self, from: data) {
+            shortcuts = stored
+        } else {
+            shortcuts = [.bypass: .defaultBypass]
+        }
 
         engine.onStatusChange = { [weak self] status in
             MainActor.assumeIsolated { self?.handle(status) }
@@ -138,13 +196,80 @@ final class AppModel {
         pushCurve()
         pushAppRules()
         engine.setPreferredOutput(uid: outputUID)
+        engine.setBalance(balance)
+        engine.setMono(mono)
         engine.setEnabled(enabled)
 
-        hotKey = GlobalHotKey(keyCode: GlobalHotKey.bypassKeyCode, modifiers: GlobalHotKey.bypassModifiers) { [weak self] in
-            MainActor.assumeIsolated { self?.toggleBypass() }
-        }
-        hotKeyAvailable = hotKey != nil
+        registerHotKeys()
         refreshLaunchAtLogin()
+    }
+
+    // MARK: - Keyboard shortcuts
+
+    /// Sets or clears (nil) an action's shortcut. A combination moves to the action it was set on last.
+    func setShortcut(_ shortcut: Shortcut?, for action: ShortcutAction) {
+        if let shortcut {
+            for (other, existing) in shortcuts where other != action && existing == shortcut { shortcuts[other] = nil }
+        }
+        shortcuts[action] = shortcut
+        if let data = try? JSONEncoder().encode(shortcuts) { defaults.set(data, forKey: Key.shortcuts) }
+        registerHotKeys()
+    }
+
+    /// While a shortcut is being recorded, the existing ones must not fire.
+    func setShortcutsSuspended(_ suspended: Bool) {
+        shortcutsSuspended = suspended
+        registerHotKeys()
+    }
+
+    /// "⌥⌘E", or why there is nothing to show.
+    func shortcutText(for action: ShortcutAction) -> String {
+        guard let shortcut = shortcuts[action] else { return "" }
+        return unavailableShortcuts.contains(action) ? "\(shortcut.display) in use" : shortcut.display
+    }
+
+    private func registerHotKeys() {
+        hotKeys.forEach { $0.unregister() }
+        hotKeys = []
+        unavailableShortcuts = []
+        guard !shortcutsSuspended else { return }
+        for action in ShortcutAction.allCases {
+            guard let shortcut = shortcuts[action] else { continue }
+            if let hotKey = GlobalHotKey(shortcut, action: { [weak self] in self?.perform(action) }) {
+                hotKeys.append(hotKey)
+            } else {
+                unavailableShortcuts.insert(action)
+            }
+        }
+    }
+
+    private func perform(_ action: ShortcutAction) {
+        switch action {
+        case .bypass: toggleBypass()
+        case .nextPreset: stepPreset(by: 1)
+        case .previousPreset: stepPreset(by: -1)
+        }
+    }
+
+    /// Moves to the next/previous preset of the current mode, wrapping around. From custom
+    /// settings, "next" goes to the first preset and "previous" to the last.
+    func stepPreset(by delta: Int) {
+        func target(_ count: Int, _ current: Int?) -> Int? {
+            guard count > 0 else { return nil }
+            guard let current else { return delta > 0 ? 0 : count - 1 }
+            return ((current + delta) % count + count) % count
+        }
+        switch mode {
+        case .simple:
+            let list = Preset.simple
+            if let i = target(list.count, activeSimplePreset.flatMap(list.firstIndex)) { applySimple(list[i]) }
+        case .advanced:
+            let list = advancedPresets
+            if let i = target(list.count, activeAdvancedPreset.flatMap(list.firstIndex)) { applyAdvanced(list[i]) }
+        case .expert:
+            let list = expertPresets
+            if let i = target(list.count, activeExpertPreset.flatMap(list.firstIndex)) { applyExpert(list[i]) }
+        }
     }
 
     // MARK: - Bypass, launch at login
@@ -172,44 +297,52 @@ final class AppModel {
 
     // MARK: - Spectrum analyzer (runs only while a view showing it is open)
 
-    /// Equalizer window: shows the spectrum only while `showAnalyzer` is on.
-    func startAnalyzer() {
-        analyzerClients += 1
+    func startSpectrum() {
+        spectrumClients += 1
         updateAnalyzer()
     }
 
-    func stopAnalyzer() {
-        analyzerClients = max(0, analyzerClients - 1)
+    func stopSpectrum() {
+        spectrumClients = max(0, spectrumClients - 1)
         updateAnalyzer()
     }
-
-    /// Popover sound bar: always wants the spectrum while it is open.
-    func startSpectrumBars() {
-        spectrumBarClients += 1
-        updateAnalyzer()
-    }
-
-    func stopSpectrumBars() {
-        spectrumBarClients = max(0, spectrumBarClients - 1)
-        updateAnalyzer()
-    }
-
-    private var analyzerWanted: Bool { spectrumBarClients > 0 || (showAnalyzer && analyzerClients > 0) }
 
     private func updateAnalyzer() {
-        let on = analyzerWanted
+        let on = spectrumClients > 0
         engine.setAnalyzerEnabled(on)
-        if !on { spectrum = nil; analyzer.reset() }
+        if !on { clearSpectrum() }
+    }
+
+    private func clearSpectrum() {
+        spectrum = nil
+        analyzer.reset()
+        peakHoldDB = []
+        peakHoldAge = []
     }
 
     private func tickAnalyzer() {
-        guard analyzerWanted else { return }
+        guard spectrumClients > 0 else { return }
         guard let (samples, rate) = engine.analyzerSamples(count: analyzer.fftSize) else {
-            if spectrum != nil { spectrum = nil; analyzer.reset() }
+            if spectrum != nil { clearSpectrum() }
             return
         }
         let levels = analyzer.analyze(samples, sampleRate: rate)
-        spectrum = SpectrumFrame(frequencies: analyzer.bandFrequencies, levelsDB: levels)
+
+        // Peak hold: each band's highest recent level stays for ~0.6 s, then falls.
+        if peakHoldDB.count != levels.count {
+            peakHoldDB = levels
+            peakHoldAge = Array(repeating: 0, count: levels.count)
+        }
+        for i in levels.indices {
+            if levels[i] >= peakHoldDB[i] {
+                peakHoldDB[i] = levels[i]
+                peakHoldAge[i] = 0
+            } else {
+                peakHoldAge[i] += 1
+                if peakHoldAge[i] > 18 { peakHoldDB[i] = max(levels[i], peakHoldDB[i] - 1.2) }
+            }
+        }
+        spectrum = SpectrumFrame(frequencies: analyzer.bandFrequencies, levelsDB: levels, peaksDB: peakHoldDB)
     }
 
     var currentDevice: OutputDevice? {
@@ -304,8 +437,7 @@ final class AppModel {
     func deleteUserPreset(_ preset: Preset) {
         userPresets.removeAll { $0.id == preset.id }
         UserPresetStore.save(userPresets)
-        deviceAssignments = deviceAssignments.filter { $0.value != preset.id }
-        defaults.set(deviceAssignments, forKey: Key.deviceAssignments)
+        removeAssignments(to: DeviceAssignment(mode: .advanced, presetID: preset.id))
     }
 
     // MARK: - Expert mode
@@ -371,7 +503,10 @@ final class AppModel {
     func importExpert(_ text: String, name: String) throws -> EqualizerAPO.ImportResult {
         let result = try EqualizerAPO.parse(text)
         setExpertCurve(result.curve)
-        saveExpertPreset(named: name)
+        // Importing the same thing twice shouldn't leave two identical curves.
+        if !userExpertPresets.contains(where: { $0.name == name && $0.curve == expertCurve }) {
+            saveExpertPreset(named: name)
+        }
         return result
     }
 
@@ -397,6 +532,7 @@ final class AppModel {
         JSONFileStore.save(userExpertPresets, to: Self.expertPresetsFile)
         // Apps using the deleted curve go back to the main EQ.
         for (app, id) in appRules where id == preset.id { setAppRule(nil, for: app, name: nil) }
+        removeAssignments(to: DeviceAssignment(mode: .expert, presetID: preset.id))
     }
 
     // MARK: - Per-app EQ
@@ -440,27 +576,59 @@ final class AppModel {
         audioApps = AudioApp.current()
     }
 
-    // MARK: - Per-device presets
+    // MARK: - Per-device presets (any mode)
 
-    // MARK: - Per-device presets
-
-    func assignedPreset(forDevice uid: String) -> Preset? {
-        guard let id = deviceAssignments[uid] else { return nil }
-        return advancedPresets.first { $0.id == id }
+    /// The device's assignment, or nil if it has none or its preset no longer exists.
+    func assignment(forDevice uid: String) -> DeviceAssignment? {
+        guard let assignment = deviceAssignments[uid], presetName(for: assignment) != nil else { return nil }
+        return assignment
     }
 
-    /// Remembers `preset` for the device and applies it now if that device is playing.
-    func assign(_ preset: Preset?, toDevice uid: String) {
-        deviceAssignments[uid] = preset?.id
-        defaults.set(deviceAssignments, forKey: Key.deviceAssignments)
-        if let preset, currentDevice?.uid == uid { applyAdvanced(preset) }
+    func presetName(for assignment: DeviceAssignment) -> String? {
+        switch assignment.mode {
+        case .simple: Preset.simple.first { $0.id == assignment.presetID }?.name
+        case .advanced: advancedPresets.first { $0.id == assignment.presetID }?.name
+        case .expert: expertPresets.first { $0.id == assignment.presetID }?.name
+        }
+    }
+
+    /// Remembers the assignment for the device and applies it now if that device is playing.
+    func assign(_ assignment: DeviceAssignment?, toDevice uid: String) {
+        deviceAssignments[uid] = assignment
+        if let data = try? JSONEncoder().encode(deviceAssignments) { defaults.set(data, forKey: Key.deviceAssignmentsV2) }
+        if let assignment, currentDevice?.uid == uid { apply(assignment) }
+    }
+
+    /// Forgets every device's assignment to a preset that was deleted.
+    private func removeAssignments(to assignment: DeviceAssignment) {
+        guard deviceAssignments.values.contains(assignment) else { return }
+        deviceAssignments = deviceAssignments.filter { $0.value != assignment }
+        if let data = try? JSONEncoder().encode(deviceAssignments) { defaults.set(data, forKey: Key.deviceAssignmentsV2) }
+    }
+
+    /// Switches to the assignment's mode and applies its preset.
+    private func apply(_ assignment: DeviceAssignment) {
+        switch assignment.mode {
+        case .simple:
+            guard let preset = Preset.simple.first(where: { $0.id == assignment.presetID }) else { return }
+            mode = .simple
+            applySimple(preset)
+        case .advanced:
+            guard let preset = advancedPresets.first(where: { $0.id == assignment.presetID }) else { return }
+            mode = .advanced
+            applyAdvanced(preset)
+        case .expert:
+            guard let preset = expertPresets.first(where: { $0.id == assignment.presetID }) else { return }
+            mode = .expert
+            applyExpert(preset)
+        }
     }
 
     private func handle(_ newStatus: EQEngine.Status) {
         status = newStatus
         guard case .running(let device) = newStatus, device.uid != lastDeviceUID else { return }
         lastDeviceUID = device.uid
-        if let preset = assignedPreset(forDevice: device.uid) { applyAdvanced(preset) }
+        if let assignment = assignment(forDevice: device.uid) { apply(assignment) }
     }
 
     // MARK: - System

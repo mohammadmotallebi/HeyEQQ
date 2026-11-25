@@ -12,13 +12,19 @@ struct AdvancedEQView: View {
     @State private var draftName = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            toolbar
-            ResponseCurveView(curve: model.advancedCurve)
-                .frame(height: 170)
+        VStack(alignment: .leading, spacing: 14) {
+            if model.mode == .simple { simpleModeNotice }
+            VStack(alignment: .leading, spacing: 12) {
+                toolbar
+                ResponseCurveView(curve: model.advancedCurve)
+                    .frame(minHeight: 170)
+            }
+            .card()
             faders
                 .frame(height: 230)
+                .card()
             deviceRow
+                .card()
         }
         .alert("Save Preset", isPresented: $showingSave) {
             TextField("Name", text: $draftName)
@@ -38,6 +44,18 @@ struct AdvancedEQView: View {
         } message: {
             Text("This can't be undone.")
         }
+    }
+
+    /// The window edits the Advanced bands; say so when Simple mode is what's playing.
+    private var simpleModeNotice: some View {
+        HStack {
+            Image(systemName: "info.circle")
+            Text("Simple mode is active, so these 10 bands aren't playing right now.")
+            Spacer()
+            Button("Switch to Advanced") { model.mode = .advanced }
+        }
+        .font(.callout)
+        .card()
     }
 
     // MARK: Toolbar
@@ -108,16 +126,7 @@ struct AdvancedEQView: View {
             if let device = model.currentDevice {
                 Text("When \(device.name) is active, use:")
                     .font(.callout)
-                Picker("Device preset", selection: Binding(
-                    get: { model.assignedPreset(forDevice: device.uid)?.id },
-                    set: { id in model.assign(model.advancedPresets.first { $0.id == id }, toDevice: device.uid) }
-                )) {
-                    Text("Nothing (keep current)").tag(String?.none)
-                    Divider()
-                    ForEach(model.advancedPresets) { p in Text(p.name).tag(Optional(p.id)) }
-                }
-                .labelsHidden()
-                .fixedSize()
+                DevicePresetPicker(model: model, device: device)
             } else {
                 Text("Turn the equalizer on to set a preset for the current output device.")
                     .font(.callout)

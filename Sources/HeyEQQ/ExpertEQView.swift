@@ -16,6 +16,8 @@ struct ExpertEQView: View {
     @State private var deleting: ExpertPreset?
     @State private var draftName = ""
     @State private var alertMessage: String?
+    @State private var showingHeadphoneSearch = false
+    @State private var headphones = HeadphoneCatalog()
 
     private var curve: EQCurve { model.expertCurve }
 
@@ -29,11 +31,20 @@ struct ExpertEQView: View {
                         if let gain { band.gainDB = (gain * 10).rounded() / 10 }
                     }
                 }
-                .frame(height: 220)
+                .frame(minHeight: 220)
+                .card()
                 bandTable
+                    .card()
                 footer
+                    .card()
             } else {
                 PerAppView(model: model)
+            }
+        }
+        .sheet(isPresented: $showingHeadphoneSearch) {
+            HeadphoneSearchSheet(model: model, catalog: headphones) { note in
+                selected = nil
+                alertMessage = note
             }
         }
         .alert("Save Curve", isPresented: $showingSave) {
@@ -80,11 +91,17 @@ struct ExpertEQView: View {
     @ViewBuilder
     private var bandsHeaderControls: some View {
         HStack(spacing: 10) {
+            Button {
+                showingHeadphoneSearch = true
+            } label: {
+                Label("Find Headphones…", systemImage: "headphones")
+            }
+            .help("Search the AutoEQ list for your headphone model and import its correction curve")
             Menu("Import") {
                 Button("AutoEQ / Equalizer APO File…", action: importFile)
                 Button("Paste from Clipboard", action: importClipboard)
                 Divider()
-                Link("Find your headphones on AutoEQ…", destination: URL(string: "https://autoeq.app")!)
+                Link("Open autoeq.app…", destination: URL(string: "https://autoeq.app")!)
             }
             .fixedSize()
             Button("Export…", action: exportFile)

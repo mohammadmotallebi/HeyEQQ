@@ -32,6 +32,11 @@ public final class EQProcessor: @unchecked Sendable {
 
     /// When true, output crossfades to the unprocessed signal.
     public let bypass = Atomic<Bool>(false)
+    /// Stereo balance in permille: -1000 = left only, 0 = centre, +1000 = right only.
+    /// Applies to the front left/right pair of the processed signal (not while bypassed).
+    public let balance = Atomic<Int>(0)
+    /// When true, the front left/right pair is summed to mono.
+    public let mono = Atomic<Bool>(false)
     /// Peak input level * 1000 since last `exchange(0)`, for the meter.
     public let inputPeak = Atomic<Int>(0)
 
@@ -73,6 +78,9 @@ public final class EQProcessor: @unchecked Sendable {
     private var limiterGain = 1.0
     private let limiterRelease: Double
     private var wet = 1.0
+    private var balanceL = 1.0
+    private var balanceR = 1.0
+    private var monoMix = 0.0
     private var primed = false
 
     public init(sampleRate: Double, tapChannelCount: Int, curve: EQCurve = .flat) {
@@ -292,6 +300,16 @@ public final class EQProcessor: @unchecked Sendable {
         }
         let endPreamp = pow(10, currentPreampDB / 20)
         let preampFrom = primed ? startPreamp : endPreamp
+
+        // Balance turns the opposite side down; it and the mono mix glide so changes don't click.
+        let bal = Double(min(max(balance.load(ordering: .relaxed), -1000), 1000)) / 1000
+        let balanceLTarget = bal > 0 ? 1 - bal : 1.0
+        let balanceRTarget = bal < 0 ? 1 + bal : 1.0
+        let monoTarget = self.mono.load(ordering: .relaxed) ? 1.0 : 0.0
+        if !primed { balanceL = balanceLTarget; balanceR = balanceRTarget; monoMix = monoTarget }
+        let balanceLFrom = balanceL, balanceRFrom = balanceR
+        let stereoStage = channelCount >= 2
+            && (monoMix != 0 || monoTarget != 0 || balanceL != 1 || balanceR != 1 || balanceLTarget != 1 || balanceRTarget != 1)
         primed = true
 
         let bandCount = currentCount
@@ -325,6 +343,16 @@ public final class EQProcessor: @unchecked Sendable {
             let pre = preampFrom + (endPreamp - preampFrom) * t
             if wet != wetTarget { wet = wet < wetTarget ? min(wet + wetStep, 1) : max(wet - wetStep, 0) }
 
+            if stereoStage {
+                if monoMix != monoTarget {
+                    monoMix = monoMix < monoTarget ? min(monoMix + wetStep, 1) : max(monoMix - wetStep, 0)
+                }
+                let l = wetScratch[0], r = wetScratch[1]
+                let mid = (l + r) * 0.5
+                wetScratch[0] = (l + (mid - l) * monoMix) * (balanceLFrom + (balanceLTarget - balanceLFrom) * t)
+                wetScratch[1] = (r + (mid - r) * monoMix) * (balanceRFrom + (balanceRTarget - balanceRFrom) * t)
+            }
+
             // Mix, then one limiter for all channels so the surround balance never shifts.
             var level = 0.0
             for c in 0..<channelCount {
@@ -348,6 +376,8 @@ public final class EQProcessor: @unchecked Sendable {
             }
         }
         if analyzing { analyzerWriteIndex.store(ringStart + frames, ordering: .releasing) }
+        balanceL = balanceLTarget
+        balanceR = balanceRTarget
 
         let p = Int(peak * 1000)
         if p > inputPeak.load(ordering: .relaxed) { inputPeak.store(p, ordering: .relaxed) }

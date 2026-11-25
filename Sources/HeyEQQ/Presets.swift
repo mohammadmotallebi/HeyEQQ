@@ -92,7 +92,7 @@ struct ExpertPreset: Identifiable, Hashable, Codable {
 
 /// JSON files in ~/Library/Application Support/HeyEQQ/.
 enum JSONFileStore {
-    private static func url(_ name: String) -> URL {
+    static func url(_ name: String) -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("HeyEQQ", isDirectory: true)
             .appendingPathComponent(name)
