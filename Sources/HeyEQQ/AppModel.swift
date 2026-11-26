@@ -67,6 +67,11 @@ final class AppModel {
         static let appVolumes = "appVolumes"
         static let suggestHeadphones = "suggestHeadphones"
         static let handledSuggestions = "handledSuggestions"
+        static let allowBuiltInSpeakers = "allowBuiltInSpeakers"
+        static let cleanHeadroom = "cleanHeadroom"
+        static let smoothLimiter = "smoothLimiter"
+        static let clarity = "clarity"
+        static let accurateTreble = "accurateTreble"
         static let balance = "balance"
         static let mono = "mono"
     }
@@ -119,6 +124,48 @@ final class AppModel {
         didSet {
             defaults.set(mono, forKey: Key.mono)
             engine.setMono(mono)
+        }
+    }
+
+    /// Whether the EQ may run on the Mac's built-in speakers. Off by default: strong bass boosts
+    /// can damage small speakers. When on, the engine limits every curve (`EQCurve.speakerSafe()`).
+    /// The UI turns this on only through `requestBuiltInSpeakers()`, which asks first.
+    var allowBuiltInSpeakers: Bool {
+        didSet {
+            defaults.set(allowBuiltInSpeakers, forKey: Key.allowBuiltInSpeakers)
+            engine.setBuiltInSpeakerAllowed(allowBuiltInSpeakers)
+        }
+    }
+
+    // Sound-quality options (all off by default, so the sound only changes when the user asks).
+
+    /// Clean: lower the preamp automatically so boosts fit and the limiter stays idle.
+    /// Off ("Loud"): boosts play louder and the limiter catches the peaks.
+    var cleanHeadroom: Bool {
+        didSet {
+            defaults.set(cleanHeadroom, forKey: Key.cleanHeadroom)
+            pushAllCurves()
+        }
+    }
+    /// The limiter looks 1.5 ms ahead and eases into peaks (adds that much delay).
+    var smoothLimiter: Bool {
+        didSet {
+            defaults.set(smoothLimiter, forKey: Key.smoothLimiter)
+            engine.setSmoothLimiter(smoothLimiter)
+        }
+    }
+    /// 0…1: presence and air lifted, low-mid mud trimmed, on top of the EQ.
+    var clarity: Double {
+        didSet {
+            defaults.set(clarity, forKey: Key.clarity)
+            pushAllCurves()
+        }
+    }
+    /// High bands keep their true shape near the top of the range.
+    var accurateTreble: Bool {
+        didSet {
+            defaults.set(accurateTreble, forKey: Key.accurateTreble)
+            engine.setAccurateTreble(accurateTreble)
         }
     }
 
@@ -219,6 +266,11 @@ final class AppModel {
             let old = defaults.dictionary(forKey: Key.deviceAssignments) as? [String: String] ?? [:]
             deviceAssignments = old.mapValues { DeviceAssignment(mode: .advanced, presetID: $0) }
         }
+        allowBuiltInSpeakers = defaults.bool(forKey: Key.allowBuiltInSpeakers)
+        cleanHeadroom = defaults.bool(forKey: Key.cleanHeadroom)
+        smoothLimiter = defaults.bool(forKey: Key.smoothLimiter)
+        clarity = min(max(defaults.double(forKey: Key.clarity), 0), 1)
+        accurateTreble = defaults.bool(forKey: Key.accurateTreble)
         balance = min(max(defaults.double(forKey: Key.balance), -1), 1)
         mono = defaults.bool(forKey: Key.mono)
         if let data = defaults.data(forKey: Key.shortcuts),
@@ -247,6 +299,9 @@ final class AppModel {
         engine.setPreferredOutput(uid: outputUID)
         engine.setBalance(balance)
         engine.setMono(mono)
+        engine.setSmoothLimiter(smoothLimiter)
+        engine.setAccurateTreble(accurateTreble)
+        engine.setBuiltInSpeakerAllowed(allowBuiltInSpeakers)
         engine.setEnabled(enabled)
 
         registerHotKeys()
@@ -408,10 +463,66 @@ final class AppModel {
     }
     var advancedCurve: EQCurve { .graphic(advancedGains, preampDB: advancedPreamp) }
 
+    /// What the engine actually plays for a curve the user set: the clarity bands are added, then
+    /// (in Clean mode) the preamp is lowered until nothing rises above 0 dB.
+    private func outputCurve(_ curve: EQCurve) -> EQCurve {
+        let shaped = clarity > 0 ? curve.addingClarity(clarity) : curve
+        return cleanHeadroom ? shaped.withCleanHeadroom() : shaped
+    }
+
+    // MARK: - Built-in speaker protection
+
+    /// The built-in speakers, when the EQ is being held off them.
+    var blockedDevice: OutputDevice? {
+        if case .blocked(let device) = status { device } else { nil }
+    }
+
+    /// True while the EQ runs on built-in speakers with its curves limited.
+    var speakerProtectionActive: Bool { currentDevice?.isBuiltInSpeaker == true }
+
+    /// How much speaker protection lowers the main EQ right now, in dB (0 when not active).
+    var speakerProtectionLoweredDB: Double {
+        guard speakerProtectionActive else { return 0 }
+        let sent = outputCurve(activeCurve)
+        return max(0, sent.preampDB - sent.speakerSafe().preampDB)
+    }
+
+    /// Asks before letting the EQ run on the built-in speakers. "Keep Off" is the default button.
+    func requestBuiltInSpeakers() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Use HeyEQQ on the built-in speakers?"
+        alert.informativeText = """
+            Small built-in speakers can be damaged by strong bass boosts at high volume, so HeyEQQ stays off them unless you allow it.
+
+            If you turn it on, speaker protection always applies on these speakers:
+            • Bass boosts below \(Int(EQCurve.speakerSafeBassHz)) Hz are held to +\(Int(EQCurve.speakerSafeBassBoostDB)) dB.
+            • No frequency ever plays louder than it would without HeyEQQ.
+
+            You can turn this off again in Settings.
+            """
+        alert.addButton(withTitle: "Keep Off")
+        alert.addButton(withTitle: "Turn On with Protection")
+        NSApp.activate()
+        if alert.runModal() == .alertSecondButtonReturn { allowBuiltInSpeakers = true }
+    }
+
+    /// How much Clean mode is lowering the main EQ right now, in dB (0 when off or not needed).
+    var cleanHeadroomDB: Double {
+        guard cleanHeadroom else { return 0 }
+        return (clarity > 0 ? activeCurve.addingClarity(clarity) : activeCurve).headroomNeededDB()
+    }
+
+    /// After a sound-quality option changed: resend the main curve and every per-app curve.
+    private func pushAllCurves() {
+        pushCurve()
+        pushAppRules()
+    }
+
     private func pushCurve() {
         limiterFixDB = 0 // measured for the old curve
         limiterFixHoldoff = 20 // ~0.7 s: let the gains glide and the limiter release before measuring again
-        engine.setCurve(activeCurve)
+        engine.setCurve(outputCurve(activeCurve))
         // Apps with only a volume have their own pipeline that must follow the main curve.
         if appVolumes.keys.contains(where: { appRules[$0] == nil }) { pushAppRules() }
     }
@@ -670,12 +781,12 @@ final class AppModel {
                 if rule == AppRule.noEQ {
                     rules[app] = EQEngine.AppRule(curve: .flat, volume: volume)
                 } else if let preset = expertPresets.first(where: { $0.id == rule }) {
-                    rules[app] = EQEngine.AppRule(curve: preset.curve, volume: volume)
+                    rules[app] = EQEngine.AppRule(curve: outputCurve(preset.curve), volume: volume)
                 } else if volume < 1 {
-                    rules[app] = EQEngine.AppRule(curve: activeCurve, volume: volume) // curve was deleted
+                    rules[app] = EQEngine.AppRule(curve: outputCurve(activeCurve), volume: volume) // curve was deleted
                 }
             } else if volume < 1 {
-                rules[app] = EQEngine.AppRule(curve: activeCurve, volume: volume) // Main EQ, own volume
+                rules[app] = EQEngine.AppRule(curve: outputCurve(activeCurve), volume: volume) // Main EQ, own volume
             }
         }
         engine.setAppRules(rules)

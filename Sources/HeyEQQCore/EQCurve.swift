@@ -107,6 +107,78 @@ public struct EQCurve: Codable, Hashable, Sendable {
         return best
     }
 
+    // MARK: Sound-quality options
+
+    /// The three bands "Clarity" adds at `amount` 0…1: a low-mid cut, a presence lift and some air.
+    public static func clarityBands(amount: Double) -> [EQBand] {
+        let k = min(max(amount, 0), 1)
+        guard k > 0 else { return [] }
+        return [
+            EQBand(type: .peak, frequency: 300, gainDB: -2.5 * k, q: 1.0),
+            EQBand(type: .peak, frequency: 3_200, gainDB: 3 * k, q: 0.9),
+            EQBand(type: .highShelf, frequency: 10_000, gainDB: 4 * k, q: 0.7071),
+        ]
+    }
+
+    /// This curve with the clarity bands appended (as many as still fit under `maxBands`).
+    public func addingClarity(_ amount: Double) -> EQCurve {
+        let extra = Self.clarityBands(amount: amount).prefix(max(0, Self.maxBands - bands.count))
+        guard !extra.isEmpty else { return self }
+        return EQCurve(bands: bands + extra, preampDB: preampDB)
+    }
+
+    /// How far the preamp must come down so the curve never rises above 0 dB (0 if it already doesn't).
+    public func headroomNeededDB() -> Double {
+        max(0, maxBoostDB() + preampDB)
+    }
+
+    /// This curve with the preamp lowered by `headroomNeededDB()`, so boosts fit without the limiter.
+    public func withCleanHeadroom() -> EQCurve {
+        let needed = headroomNeededDB()
+        guard needed > 0 else { return self }
+        var curve = self
+        curve.preampDB = preampDB - (needed * 10).rounded(.up) / 10
+        return curve
+    }
+
+    // MARK: Built-in speaker protection
+
+    /// Bass limit used on the Mac's own speakers: below this frequency…
+    public static let speakerSafeBassHz = 250.0
+    /// …the bands together may boost by at most this much.
+    public static let speakerSafeBassBoostDB = 6.0
+
+    /// The version of this curve that is allowed on built-in speakers:
+    /// 1. the combined boost below `speakerSafeBassHz` is held to `speakerSafeBassBoostDB`
+    ///    (bass boosts are scaled down until it fits), and
+    /// 2. the preamp is lowered so no frequency ever plays louder than it would without the EQ.
+    public func speakerSafe() -> EQCurve {
+        var curve = self
+        for _ in 0..<6 {
+            let bass = curve.maxBassBoostDB()
+            guard bass > Self.speakerSafeBassBoostDB + 0.05 else { break }
+            let scale = Self.speakerSafeBassBoostDB / bass
+            // Scale every boost that reaches into the bass (bands up to an octave above the limit).
+            for i in curve.bands.indices where curve.bands[i].isEnabled && curve.bands[i].type.usesGain
+                && curve.bands[i].gainDB > 0 && curve.bands[i].frequency <= Self.speakerSafeBassHz * 2 {
+                curve.bands[i].gainDB *= scale
+            }
+        }
+        return curve.withCleanHeadroom()
+    }
+
+    /// Highest boost of the bands alone between 20 Hz and `speakerSafeBassHz`.
+    func maxBassBoostDB() -> Double {
+        var bandsOnly = self
+        bandsOnly.preampDB = 0
+        var best = -Double.infinity
+        for i in 0...60 {
+            let f = 20 * pow(Self.speakerSafeBassHz / 20, Double(i) / 60)
+            best = max(best, bandsOnly.responseDB(at: f))
+        }
+        return best
+    }
+
     /// Clamps values to what the DSP can safely run at `sampleRate`.
     func sanitized(sampleRate: Double) -> EQCurve {
         let nyquistLimit = sampleRate * 0.49

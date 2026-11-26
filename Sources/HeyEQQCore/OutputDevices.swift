@@ -10,6 +10,9 @@ public struct OutputDevice: Identifiable, Hashable, Sendable {
     public let outputChannels: Int
     /// Channels of output stream 0, which a device-stream tap captures.
     public let firstStreamChannels: Int
+    /// The Mac's own speakers (not its headphone jack). Small speakers can be damaged by strong
+    /// bass boosts, so the engine keeps off them unless the user allows it, and then limits curves.
+    public let isBuiltInSpeaker: Bool
 
     public var isMultichannel: Bool { firstStreamChannels > 2 }
 }
@@ -59,6 +62,16 @@ public enum OutputDeviceCatalog {
               !uid.hasPrefix(ownAggregatePrefix) else { return nil }
         let name = (try? id.readString(kAudioObjectPropertyName)) ?? uid
         return OutputDevice(id: id, uid: uid, name: name,
-                            outputChannels: totalOutputChannels(id), firstStreamChannels: firstStreamChannels(id))
+                            outputChannels: totalOutputChannels(id), firstStreamChannels: firstStreamChannels(id),
+                            isBuiltInSpeaker: isBuiltInSpeaker(id, uid: uid))
+    }
+
+    /// Built-in transport and either Apple silicon's dedicated speaker device or, on Macs with one
+    /// combined "Built-in Output", the internal-speaker data source (headphones report 'hdpn').
+    static func isBuiltInSpeaker(_ id: AudioObjectID, uid: String) -> Bool {
+        guard (try? id.read(kAudioDevicePropertyTransportType, initial: UInt32(0))) == kAudioDeviceTransportTypeBuiltIn else { return false }
+        if uid == "BuiltInSpeakerDevice" { return true }
+        let source = try? id.read(kAudioDevicePropertyDataSource, scope: kAudioObjectPropertyScopeOutput, initial: UInt32(0))
+        return source == 0x6973_706B // 'ispk'
     }
 }

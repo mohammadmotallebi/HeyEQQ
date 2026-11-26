@@ -114,6 +114,8 @@ struct ExpertEQView: View {
             Button("Export…", action: exportFile)
             presetMenu
         }
+        .menuStyle(.button)
+        .glassButtons()
     }
 
     private var presetMenu: some View {

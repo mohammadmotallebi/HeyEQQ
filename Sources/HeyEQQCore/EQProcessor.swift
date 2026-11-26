@@ -37,6 +37,12 @@ public final class EQProcessor: @unchecked Sendable {
     public let balance = Atomic<Int>(0)
     /// When true, the front left/right pair is summed to mono.
     public let mono = Atomic<Bool>(false)
+    /// "Accurate treble": use the matched filter design for high bands (see `BiquadCoefficients.makeMatched`).
+    public let accurateTreble = Atomic<Bool>(false)
+    /// "Smooth limiter": the limiter looks `lookaheadSeconds` ahead and eases into peaks instead of
+    /// clamping them the instant they arrive. Delays the output by that much.
+    public let smoothLimiter = Atomic<Bool>(false)
+    static let lookaheadSeconds = 0.0015
     /// Output volume in permille (1000 = unchanged, 0 = silent), for per-app volume. Unlike
     /// balance and mono it also applies while bypassed: it is a mixer setting, not part of the EQ.
     public let volume = Atomic<Int>(1000)
@@ -88,12 +94,26 @@ public final class EQProcessor: @unchecked Sendable {
     private var balanceR = 1.0
     private var monoMix = 0.0
     private var volumeGain = 1.0
+    private var matchedDesign = false
+    // Look-ahead limiter: a delay line per channel plus the gain each delayed frame needs.
+    private let lookahead: Int
+    private let lookaheadAttack: Double
+    private let delayLine: UnsafeMutableBufferPointer<Double> // [channel * lookahead + index]
+    private let neededRing: UnsafeMutableBufferPointer<Double>
+    private var delayIndex = 0
+    private var windowMin = 1.0
+    private var windowMinIndex = 0
+    private var lookaheadActive = false
     private var primed = false
 
     public init(sampleRate: Double, tapChannelCount: Int, curve: EQCurve = .flat) {
         self.sampleRate = sampleRate
         self.tapChannelCount = tapChannelCount
         limiterRelease = exp(-1 / (Self.limiterReleaseSeconds * sampleRate))
+        lookahead = max(8, Int(Self.lookaheadSeconds * sampleRate))
+        lookaheadAttack = exp(-5 / Double(lookahead)) // within 1% of the target after `lookahead` frames
+        delayLine = .allocate(capacity: lookahead * Self.maxChannels); delayLine.initialize(repeating: 0)
+        neededRing = .allocate(capacity: lookahead); neededRing.initialize(repeating: 1)
         params = Mutex(Params(curve: curve.sanitized(sampleRate: sampleRate), version: 0))
         let n = Self.maxBands
         let blank = EQBand(type: .peak, frequency: 1_000)
@@ -117,6 +137,7 @@ public final class EQProcessor: @unchecked Sendable {
     deinit {
         target.deallocate(); current.deallocate(); coeffs.deallocate(); startCoeffs.deallocate()
         ramping.deallocate(); active.deallocate(); states.deallocate(); analyzerRing.deallocate()
+        delayLine.deallocate(); neededRing.deallocate()
         inChannels.deallocate(); outChannels.deallocate(); wetScratch.deallocate(); dryScratch.deallocate()
         placeholderSample.deallocate()
     }
@@ -196,14 +217,14 @@ public final class EQProcessor: @unchecked Sendable {
                 c.gainDB = slew(c.gainDB, toward: 0, maxStep: maxStep)
                 if c.gainDB != 0 { drained = false }
                 current[i] = c
-                coeffs[i] = c.isTransparent ? .identity : .make(for: c, sampleRate: sampleRate)
+                coeffs[i] = c.isTransparent ? .identity : .make(for: c, sampleRate: sampleRate, matched: matchedDesign)
                 ramping[i] = true
             }
             if drained {
                 for i in 0..<targetCount {
                     current[i] = target[i]
                     if target[i].type.usesGain { current[i].gainDB = 0 }
-                    coeffs[i] = current[i].isTransparent ? .identity : .make(for: current[i], sampleRate: sampleRate)
+                    coeffs[i] = current[i].isTransparent ? .identity : .make(for: current[i], sampleRate: sampleRate, matched: matchedDesign)
                     resetStates(band: i)
                 }
                 currentCount = targetCount
@@ -214,6 +235,11 @@ public final class EQProcessor: @unchecked Sendable {
             }
             return
         }
+
+        // Switching the filter design recomputes every band; the coefficients glide across this buffer.
+        let wantMatched = accurateTreble.load(ordering: .relaxed)
+        let designChanged = wantMatched != matchedDesign
+        matchedDesign = wantMatched
 
         // New bands start transparent (gain 0) and glide in.
         if targetCount > currentCount {
@@ -230,7 +256,7 @@ public final class EQProcessor: @unchecked Sendable {
             startCoeffs[i] = coeffs[i]
             var c = current[i]
             let t = target[i]
-            var changed = !primed
+            var changed = !primed || designChanged
             var snap = !primed
 
             if c.type != t.type || c.isEnabled != t.isEnabled {
@@ -249,7 +275,7 @@ public final class EQProcessor: @unchecked Sendable {
 
             if changed {
                 current[i] = c
-                coeffs[i] = c.isTransparent ? .identity : .make(for: c, sampleRate: sampleRate)
+                coeffs[i] = c.isTransparent ? .identity : .make(for: c, sampleRate: sampleRate, matched: matchedDesign)
                 if snap { startCoeffs[i] = coeffs[i] }
             }
             ramping[i] = changed && !snap
@@ -333,6 +359,16 @@ public final class EQProcessor: @unchecked Sendable {
         let ringMask = Self.analyzerCapacity - 1
         let stride = Self.maxChannels
 
+        // Turning the look-ahead on or off changes the delay, so start it from a clean line.
+        let smooth = smoothLimiter.load(ordering: .relaxed)
+        if smooth != lookaheadActive {
+            lookaheadActive = smooth
+            delayLine.update(repeating: 0)
+            neededRing.update(repeating: 1)
+            delayIndex = 0; windowMin = 1; windowMinIndex = 0
+        }
+        let lookahead = self.lookahead
+
         for f in 0..<frames {
             for c in 0..<channelCount {
                 let x = inChannels[mono ? 0 : c][f]
@@ -371,11 +407,38 @@ public final class EQProcessor: @unchecked Sendable {
                 level = max(level, abs(y))
             }
             let needed = level > Self.limiterCeiling ? Self.limiterCeiling / level : 1
-            limiterGain = needed < limiterGain ? needed : needed + (limiterGain - needed) * limiterRelease
-            minLimiterGain = min(minLimiterGain, limiterGain)
+            var gain: Double
+            if smooth {
+                // This frame goes into the delay line; the frame written `lookahead` frames ago comes out.
+                let i = delayIndex
+                let neededDelayed = neededRing[i]
+                neededRing[i] = needed
+                // Lowest gain any frame still in the line needs (sliding minimum).
+                if needed <= windowMin {
+                    windowMin = needed; windowMinIndex = i
+                } else if windowMinIndex == i {
+                    windowMin = neededRing[0]; windowMinIndex = 0
+                    for k in 1..<lookahead where neededRing[k] < windowMin { windowMin = neededRing[k]; windowMinIndex = k }
+                }
+                // Ease down ahead of a peak, release slowly after it.
+                let target = min(windowMin, neededDelayed)
+                limiterGain = target + (limiterGain - target) * (target < limiterGain ? lookaheadAttack : limiterRelease)
+                gain = min(limiterGain, neededDelayed) // never above what the outgoing frame needs
+                for c in 0..<channelCount {
+                    let slot = c * lookahead + i
+                    let delayed = delayLine[slot]
+                    delayLine[slot] = wetScratch[c]
+                    wetScratch[c] = delayed
+                }
+                delayIndex = i + 1 == lookahead ? 0 : i + 1
+            } else {
+                limiterGain = needed < limiterGain ? needed : needed + (limiterGain - needed) * limiterRelease
+                gain = limiterGain
+            }
+            minLimiterGain = min(minLimiterGain, gain)
 
             for c in 0..<channelCount {
-                let y = Float(min(max(wetScratch[c] * limiterGain, -1), 1))
+                let y = Float(min(max(wetScratch[c] * gain, -1), 1))
                 outChannels[c][f] = y
                 outPeak = max(outPeak, abs(y))
             }

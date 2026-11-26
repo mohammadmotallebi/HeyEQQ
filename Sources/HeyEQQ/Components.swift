@@ -269,11 +269,58 @@ struct SpectrumBars: View {
 }
 
 extension View {
-    /// Rounded, lightly tinted section background used in the popover.
+    /// Section container. Liquid Glass on macOS 26 and later; a flat, lightly tinted card before that.
+    ///
+    /// Controls inside a card keep their standard styles: glass belongs on the card itself, and
+    /// glass stacked on glass is muddy.
+    @ViewBuilder
     func card() -> some View {
+        let content = padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: .rect(cornerRadius: 16))
+        } else {
+            content.background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
+
+    /// Opaque card for a layer that stays put while other content scrolls past it (the Equalizer
+    /// window's header). Glass there would let the scrolling cards show through and blend with it.
+    func solidCard() -> some View {
         padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+            .background {
+                // The shadow goes on the shape only: on the whole card it would also be drawn
+                // behind every translucent control inside it.
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color(nsColor: .windowBackgroundColor))
+                    .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.primary.opacity(0.1)))
+    }
+
+    /// Lets the glass cards inside render as one group (better performance and consistent
+    /// lighting). The small spacing keeps neighbouring cards from melting into each other.
+    /// Does nothing before macOS 26.
+    @ViewBuilder
+    func glassGroup() -> some View {
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: 4) { self }
+        } else {
+            self
+        }
+    }
+
+    /// Glass style for buttons that sit directly on the window or popover, outside any card.
+    /// `prominent` is for the main action. Standard bordered buttons before macOS 26.
+    @ViewBuilder
+    func glassButtons(prominent: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            if prominent { buttonStyle(.glassProminent) } else { buttonStyle(.glass) }
+        } else if prominent {
+            buttonStyle(.borderedProminent)
+        } else {
+            self
+        }
     }
 }
 
@@ -352,7 +399,8 @@ extension EQEngine.Status {
         switch self {
         case .off: "Off — audio plays normally"
         case .starting: "Starting… click Allow if macOS asks"
-        case .running(let device): "Equalizing → \(device.name)"
+        case .running(let device): "Equalizing → \(device.name)" + (device.isBuiltInSpeaker ? " (protected)" : "")
+        case .blocked(let device): "Off on \(device.name) to protect them"
         case .failed(let message): "Error: \(message)"
         }
     }
@@ -362,6 +410,7 @@ extension EQEngine.Status {
         case .off: .secondary
         case .starting: .orange
         case .running: .green
+        case .blocked: .orange
         case .failed: .red
         }
     }

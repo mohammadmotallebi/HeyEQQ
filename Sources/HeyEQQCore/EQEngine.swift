@@ -28,6 +28,9 @@ public final class EQEngine: @unchecked Sendable {
         case off
         case starting
         case running(device: OutputDevice)
+        /// Not processing because the output is the Mac's built-in speakers and the user hasn't
+        /// allowed that. Audio plays normally.
+        case blocked(device: OutputDevice)
         case failed(String)
     }
 
@@ -50,6 +53,11 @@ public final class EQEngine: @unchecked Sendable {
     private var analyzerOn = false
     private var balancePermille = 0
     private var monoOn = false
+    private var accurateTrebleOn = false
+    private var builtInSpeakerAllowed = false
+    /// True while the pipelines play on built-in speakers: every curve is made speaker-safe.
+    private var speakerProtected = false
+    private var smoothLimiterOn = false
     private var curve = EQCurve.flat
     private var appRules: [String: AppRule] = [:]
     private var preferredUID: String?
@@ -84,8 +92,23 @@ public final class EQEngine: @unchecked Sendable {
     public func setCurve(_ newCurve: EQCurve) {
         queue.async {
             self.curve = newCurve
-            self.mainPipeline?.processor?.setCurve(newCurve)
+            self.mainPipeline?.processor?.setCurve(self.effective(newCurve))
         }
+    }
+
+    /// Whether the EQ may run on the Mac's built-in speakers (off by default). When it does,
+    /// curves are limited with `EQCurve.speakerSafe()`.
+    public func setBuiltInSpeakerAllowed(_ on: Bool) {
+        queue.async {
+            guard on != self.builtInSpeakerAllowed else { return }
+            self.builtInSpeakerAllowed = on
+            if self.enabled { self.rebuild() }
+        }
+    }
+
+    /// The curve a pipeline actually runs: limited while playing on built-in speakers.
+    private func effective(_ curve: EQCurve) -> EQCurve {
+        speakerProtected ? curve.speakerSafe() : curve
     }
 
     /// Per-app curve and volume keyed by app bundle ID. Apps without a rule go through the main pipeline.
@@ -97,7 +120,7 @@ public final class EQEngine: @unchecked Sendable {
                 if self.enabled { self.rebuild() }
             } else {
                 for (app, pipeline) in self.appPipelines {
-                    pipeline.processor?.setCurve(rules[app]?.curve ?? .flat)
+                    pipeline.processor?.setCurve(self.effective(rules[app]?.curve ?? .flat))
                     pipeline.processor?.volume.store(rules[app]?.volumePermille ?? 1000, ordering: .relaxed)
                 }
             }
@@ -126,6 +149,22 @@ public final class EQEngine: @unchecked Sendable {
         queue.async {
             self.monoOn = on
             for p in self.processors.withLock({ $0 }) { p.mono.store(on, ordering: .relaxed) }
+        }
+    }
+
+    /// "Accurate treble" filter design on every pipeline.
+    public func setAccurateTreble(_ on: Bool) {
+        queue.async {
+            self.accurateTrebleOn = on
+            for p in self.processors.withLock({ $0 }) { p.accurateTreble.store(on, ordering: .relaxed) }
+        }
+    }
+
+    /// Look-ahead ("smooth") limiter on every pipeline.
+    public func setSmoothLimiter(_ on: Bool) {
+        queue.async {
+            self.smoothLimiterOn = on
+            for p in self.processors.withLock({ $0 }) { p.smoothLimiter.store(on, ordering: .relaxed) }
         }
     }
 
@@ -211,6 +250,15 @@ public final class EQEngine: @unchecked Sendable {
         guard enabled else { publish(.off); return }
         guard let device = desiredDevice() else { publish(.failed("No output device available")); return }
 
+        // Built-in speakers: stay off unless allowed, and limit the curves when allowed.
+        speakerProtected = device.isBuiltInSpeaker
+        if device.isBuiltInSpeaker && !builtInSpeakerAllowed {
+            log.notice("not starting on \(device.name, privacy: .public): built-in speakers are not allowed")
+            watchActiveDevice(device) // so a change (e.g. headphones plugged into the same device) re-checks
+            publish(.blocked(device: device))
+            return
+        }
+
         // Another HeyEQQ (e.g. the terminal spike) would tap our output and we'd tap theirs: feedback.
         let others = InstanceGuard.otherInstances()
         guard others.isEmpty else {
@@ -226,7 +274,7 @@ public final class EQEngine: @unchecked Sendable {
         let excluded = routes.values.flatMap { $0 }
         let multichannel = wantsMultichannel(device)
 
-        let main = SystemAudioTap(outputDevice: device, curve: curve,
+        let main = SystemAudioTap(outputDevice: device, curve: effective(curve),
                                   target: multichannel ? .deviceStream(excluding: excluded) : .global(excluding: excluded))
         do {
             try main.start() // may block on the first-run permission prompt
@@ -235,13 +283,13 @@ public final class EQEngine: @unchecked Sendable {
             publish(.failed(String(describing: error)))
             return
         }
-        main.processor?.setCurve(curve) // settings may have changed while start() was blocked
+        main.processor?.setCurve(effective(curve)) // settings may have changed while start() was blocked
         mainPipeline = main
         pipelinesMultichannel = multichannel
-        log.notice("running on \(device.name, privacy: .public) [\(device.uid, privacy: .public)] rate=\(main.processor?.sampleRate ?? 0) deviceCh=\(device.outputChannels) tapCh=\(main.processor?.tapChannelCount ?? 0) multichannel=\(multichannel) excludedSelf=\(main.excludedSelf) appPipelines=\(routes.count)")
+        log.notice("running on \(device.name, privacy: .public) speakerProtected=\(self.speakerProtected) [\(device.uid, privacy: .public)] rate=\(main.processor?.sampleRate ?? 0) deviceCh=\(device.outputChannels) tapCh=\(main.processor?.tapChannelCount ?? 0) multichannel=\(multichannel) excludedSelf=\(main.excludedSelf) appPipelines=\(routes.count)")
 
         for (app, ids) in routes.sorted(by: { $0.key < $1.key }) {
-            let pipeline = SystemAudioTap(outputDevice: device, curve: appRules[app]?.curve ?? .flat,
+            let pipeline = SystemAudioTap(outputDevice: device, curve: effective(appRules[app]?.curve ?? .flat),
                                           target: multichannel ? .processesOnDevice(ids) : .processes(ids))
             do {
                 try pipeline.start()
@@ -262,6 +310,8 @@ public final class EQEngine: @unchecked Sendable {
             p.analyzerEnabled.store(analyzerOn, ordering: .relaxed)
             p.balance.store(balancePermille, ordering: .relaxed)
             p.mono.store(monoOn, ordering: .relaxed)
+            p.accurateTreble.store(accurateTrebleOn, ordering: .relaxed)
+            p.smoothLimiter.store(smoothLimiterOn, ordering: .relaxed)
         }
         processors.withLock { $0 = active }
         watchActiveDevice(device)
@@ -380,6 +430,11 @@ public final class EQEngine: @unchecked Sendable {
         let force: () -> Void = { [weak self] in self?.scheduleRebuild(force: true) }
         deviceListeners = [kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyDeviceIsAlive].compactMap {
             try? PropertyListener(object: device.id, selector: $0, queue: queue, handler: force)
+        }
+        // Speakers <-> headphones on Macs where both share one "Built-in Output" device.
+        if let source = try? PropertyListener(object: device.id, selector: kAudioDevicePropertyDataSource,
+                                              scope: kAudioObjectPropertyScopeOutput, queue: queue, handler: force) {
+            deviceListeners.append(source)
         }
         // Speaker configuration changed (e.g. stereo -> 5.1 in Audio MIDI Setup).
         if let layout = try? PropertyListener(object: device.id, selector: kAudioDevicePropertyStreamConfiguration,

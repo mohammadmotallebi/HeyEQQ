@@ -24,10 +24,13 @@ struct EqualizerWindow: View {
                 }
                 .opacity(model.enabled ? 1 : 0.6)
                 .environment(\.spectrumFrame, model.showAnalyzer ? model.spectrum : nil)
+                .glassGroup()
             }
         }
         .padding(20)
         .frame(minWidth: 800, minHeight: 720)
+        // A translucent window gives the glass cards something to pick up light and colour from.
+        .containerBackground(.thinMaterial, for: .window)
         .onAppear {
             if model.mode == .simple && !model.showingSettings { model.mode = .advanced }
             model.startMetering()
@@ -98,7 +101,8 @@ struct EqualizerWindow: View {
             .fixedSize()
             .help("Settings: shortcuts, balance, per-device presets")
         }
-        .card()
+        .solidCard() // fixed above scrolling content, so opaque rather than glass
+        .zIndex(1)
     }
 
     private var bypassHelp: String {

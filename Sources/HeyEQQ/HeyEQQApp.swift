@@ -16,7 +16,7 @@ struct HeyEQQApp: App {
         MenuBarExtra {
             MenuView(model: model)
         } label: {
-            MenuBarLabel(active: model.enabled && !model.bypassed)
+            MenuBarLabel(active: model.enabled && !model.bypassed && model.blockedDevice == nil)
         }
         .menuBarExtraStyle(.window)
 

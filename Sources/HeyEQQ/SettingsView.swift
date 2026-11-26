@@ -19,6 +19,45 @@ struct SettingsView: View {
                     }
                 }
 
+                section("Sound Quality", note: "Each option is independent. They apply to the main EQ and to apps with their own curve (not to apps set to “No EQ”).") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("When boosts get too loud")
+                            Spacer()
+                            Picker("When boosts get too loud", selection: $model.cleanHeadroom) {
+                                Text("Loud").tag(false)
+                                Text("Clean").tag(true)
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .frame(width: 180)
+                        }
+                        Text(headroomNote).font(.caption).foregroundStyle(.secondary)
+                    }
+                    qualityToggle("Smooth limiter", isOn: $model.smoothLimiter,
+                                  note: "The limiter looks 1.5 ms ahead and eases into peaks instead of clamping them, so it is much harder to hear. Delays the sound by 1.5 ms. Switching it can make one small tick.")
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 12) {
+                            Text("Clarity")
+                            Slider(value: Binding(get: { model.clarity }, set: { raw in
+                                let value = (raw * 20).rounded() / 20
+                                if value != model.clarity { model.clarity = value }
+                            }), in: 0...1)
+                            Text(model.clarity == 0 ? "Off" : "\(Int((model.clarity * 100).rounded()))%")
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 44, alignment: .trailing)
+                            Button("Reset") { model.clarity = 0 }
+                                .disabled(model.clarity == 0)
+                        }
+                        Text("Lifts presence and air and trims muddy low-mids, on top of your EQ. A matter of taste, not accuracy. It isn't drawn in the EQ graphs.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    qualityToggle("Accurate treble", isOn: $model.accurateTreble,
+                                  note: "High bands (from about 2 kHz up) keep their true width and level near the top of the range instead of being squeezed. Most noticeable on 44.1 and 48 kHz devices. Shelves are unaffected.")
+                }
+
                 section("Sound", note: "Balance and mono apply to the left/right pair, after the EQ. Bypass turns them off too.") {
                     HStack(spacing: 12) {
                         Text("Balance")
@@ -32,6 +71,18 @@ struct SettingsView: View {
                     }
                     Toggle("Mono (play the same sound on both sides)", isOn: $model.mono)
                         .toggleStyle(.checkbox)
+                }
+
+                section("Built-in Speakers", note: "Small built-in speakers can be damaged by strong bass boosts at high volume, so HeyEQQ stays off them unless you allow it here.") {
+                    Toggle("Use HeyEQQ on this Mac's built-in speakers, with protection", isOn: Binding(
+                        get: { model.allowBuiltInSpeakers },
+                        set: { on in if on { model.requestBuiltInSpeakers() } else { model.allowBuiltInSpeakers = false } }
+                    ))
+                    .toggleStyle(.checkbox)
+                    Text("Protection always applies on these speakers: bass boosts below \(Int(EQCurve.speakerSafeBassHz)) Hz are held to +\(Int(EQCurve.speakerSafeBassBoostDB)) dB, and no frequency ever plays louder than it would without HeyEQQ. Headphones and external speakers are not affected.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 section("Output Devices", note: "Pick what each device switches to when it becomes the active output. It can be a preset from any mode.") {
@@ -72,10 +123,31 @@ struct SettingsView: View {
                     Spacer()
                     Button("Done") { model.showingSettings = false }
                         .keyboardShortcut(.defaultAction)
+                        .glassButtons(prominent: true)
                 }
             }
+            // Grouped inside the scroll view, so the glass is clipped with the scrolling content
+            // and never drawn over the fixed header.
+            .glassGroup()
         }
         .onAppear { model.refreshDevices(); model.refreshLaunchAtLogin() }
+    }
+
+    private var headroomNote: String {
+        if !model.cleanHeadroom {
+            return "Loud: boosts play louder and the limiter turns down peaks that would clip. Constant limiting sounds slightly squashed."
+        }
+        let lowered = model.cleanHeadroomDB
+        return "Clean: the volume comes down just enough that the limiter never has to work. "
+            + (lowered > 0.05 ? String(format: "Right now it plays %.1f dB lower; turn your speaker up to compensate.", lowered)
+                              : "Your current EQ needs no lowering.")
+    }
+
+    private func qualityToggle(_ title: String, isOn: Binding<Bool>, note: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(title, isOn: isOn).toggleStyle(.checkbox)
+            Text(note).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var balanceText: String {

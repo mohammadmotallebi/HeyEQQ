@@ -9,6 +9,7 @@ struct MenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if let device = model.blockedDevice { speakerProtectionCard(device) }
             if let suggestion = model.headphoneSuggestion { suggestionRow(suggestion) }
             soundBar
 
@@ -27,11 +28,19 @@ struct MenuView: View {
                 }
             }
             .card()
-            .opacity(model.enabled ? 1 : 0.5)
+            .opacity(model.enabled && model.blockedDevice == nil ? 1 : 0.5)
+
+            if let note = qualityNote {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+            }
 
             settings
             footer
         }
+        .glassGroup()
         .padding(16)
         .frame(width: 420)
         .onAppear {
@@ -59,6 +68,21 @@ struct MenuView: View {
                 .controlSize(.large)
                 .labelsHidden()
         }
+    }
+
+    /// Shown while the EQ is held off the Mac's built-in speakers.
+    private func speakerProtectionCard(_ device: OutputDevice) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("HeyEQQ is off on \(device.name)", systemImage: "speaker.badge.exclamationmark")
+                .font(.callout.weight(.semibold))
+            Text("Strong bass boosts can damage small built-in speakers, so they play untouched. You can turn HeyEQQ on for them with protection: limited bass, and never louder than normal.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Turn On with Protection…") { model.requestBuiltInSpeakers() }
+                .controlSize(.small)
+        }
+        .card()
     }
 
     /// Shown when the active device has no preset yet and matches a headphone in the AutoEQ list.
@@ -156,6 +180,19 @@ struct MenuView: View {
                 .keyboardShortcut("q")
         }
         .controlSize(.small)
+        .glassButtons()
+    }
+
+    /// One line saying which sound-quality options are shaping the sound beyond the EQ shown above.
+    private var qualityNote: String? {
+        var parts: [String] = []
+        if model.speakerProtectionActive {
+            let lowered = model.speakerProtectionLoweredDB
+            parts.append("Speaker protection on" + (lowered > 0.05 ? String(format: ": %.1f dB lower", lowered) : ""))
+        }
+        if model.cleanHeadroomDB > 0.05 { parts.append(String(format: "Clean: %.1f dB lower", model.cleanHeadroomDB)) }
+        if model.clarity > 0 { parts.append("Clarity \(Int((model.clarity * 100).rounded()))%") }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ") + " (Settings › Sound Quality)"
     }
 
     private func sectionTitle(_ title: String, detail: String? = nil) -> some View {
