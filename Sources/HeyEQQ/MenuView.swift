@@ -99,7 +99,7 @@ struct MenuView: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                 Spacer()
-                LimiterIndicator(reductionDB: model.limiterReductionDB)
+                LimiterIndicator(reductionDB: model.limiterReductionDB, fixDB: model.limiterFixDB, fix: model.fixLimiting)
             }
             .disabled(!model.enabled)
         }
@@ -188,6 +188,16 @@ struct MenuView: View {
                     BandSlider(label: AppModel.simpleBandLabels[i],
                                value: Binding(get: { model.simpleGains[i] },
                                               set: { model.setSimpleGain($0, at: i) }))
+                }
+            }
+            if model.simplePreamp != 0 {
+                HStack {
+                    Text(String(format: "Preamp %+.1f dB (set by Fix limiting)", model.simplePreamp))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Remove") { model.resetSimplePreamp() }
+                        .controlSize(.small)
                 }
             }
         }

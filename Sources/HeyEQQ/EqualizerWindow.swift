@@ -61,7 +61,8 @@ struct EqualizerWindow: View {
                     .frame(height: 28)
                 HStack(spacing: 6) {
                     LevelMeter(level: model.level)
-                    LimiterIndicator(reductionDB: model.limiterReductionDB, compact: true)
+                    LimiterIndicator(reductionDB: model.limiterReductionDB, fixDB: model.limiterFixDB,
+                                     compact: true, fix: model.fixLimiting)
                 }
             }
             .frame(width: 140)

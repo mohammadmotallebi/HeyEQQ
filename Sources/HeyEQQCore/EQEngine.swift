@@ -164,12 +164,13 @@ public final class EQEngine: @unchecked Sendable {
         return Double(p) / 1000
     }
 
-    /// Deepest limiter gain (1 = not limiting, 0.5 = peaks turned down by half) across all
-    /// pipelines since the last call.
-    public func takeLimiterGain() -> Double {
-        let all = processors.withLock { $0 }
-        let g = all.map { $0.limiterGainMin.exchange(1000, ordering: .relaxed) }.min() ?? 1000
-        return Double(g) / 1000
+    /// Deepest limiter gain since the last call (1 = not limiting, 0.5 = peaks turned down by
+    /// half): for the main pipeline, and across the per-app pipelines.
+    public func takeLimiterGains() -> (main: Double, apps: Double) {
+        let gains = processors.withLock { $0 }.map { $0.limiterGainMin.exchange(1000, ordering: .relaxed) }
+        let main = gains.first ?? 1000 // the main processor is always first
+        let apps = gains.dropFirst().min() ?? 1000
+        return (Double(main) / 1000, Double(apps) / 1000)
     }
 
     /// Stops processing and restores normal system audio. Waits up to `timeout` seconds.

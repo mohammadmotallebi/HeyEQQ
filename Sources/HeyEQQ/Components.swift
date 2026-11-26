@@ -277,29 +277,56 @@ extension View {
     }
 }
 
-/// Lights up while the limiter is turning peaks down, with how much. `compact` shows only the dot.
+/// Lights up while the limiter is turning peaks down, with how much, and offers to fix it by
+/// lowering the preamp. `compact` shows only the dot (click it to fix).
 struct LimiterIndicator: View {
     let reductionDB: Double
+    /// How much "Fix" would lower the preamp (0 = nothing to fix).
+    var fixDB: Double = 0
     var compact = false
+    var fix: () -> Void = {}
 
     private var active: Bool { reductionDB > 0 }
+    private var canFix: Bool { fixDB >= AppModel.limiterFixThresholdDB }
 
     var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(active ? Color.orange : Color.primary.opacity(0.18))
-                .frame(width: 7, height: 7)
-            if !compact {
-                Text(active ? String(format: "Limiting −%.1f dB", reductionDB) : "Limiter idle")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(active ? Color.orange : Color.secondary)
+        HStack(spacing: 6) {
+            if compact {
+                Button(action: fix) { dot }
+                    .buttonStyle(.plain)
+                    .disabled(!canFix)
+            } else {
+                HStack(spacing: 4) {
+                    dot
+                    Text(active ? String(format: "Limiting −%.1f dB", reductionDB) : "Limiter idle")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(active ? Color.orange : Color.secondary)
+                }
+                if canFix {
+                    Button("Fix", action: fix).controlSize(.small)
+                }
             }
         }
-        .help(active
-            ? String(format: "Your boosts push peaks past full scale, so the limiter is turning them down by %.1f dB to prevent distortion. Lower the preamp or the boosts to stop this.", reductionDB)
-            : "The limiter only steps in when boosted peaks would clip. Right now it isn't needed.")
-        .accessibilityElement()
+        .help(helpText)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(active ? String(format: "Limiter reducing by %.1f decibels", reductionDB) : "Limiter idle")
+    }
+
+    private var dot: some View {
+        Circle()
+            .fill(active ? Color.orange : (canFix ? Color.orange.opacity(0.45) : Color.primary.opacity(0.18)))
+            .frame(width: 7, height: 7)
+    }
+
+    private var helpText: String {
+        if canFix {
+            return String(format: "Your boosts push peaks past full scale, so the limiter has been turning them down by up to %.1f dB. %@ lowers the preamp by that much so it no longer has to.",
+                          fixDB, compact ? "Clicking the dot" : "Fix")
+        }
+        if active {
+            return "An app with its own EQ is being limited. Lower that curve's preamp or boosts to stop it."
+        }
+        return "The limiter only steps in when boosted peaks would clip. Right now it isn't needed."
     }
 }
 

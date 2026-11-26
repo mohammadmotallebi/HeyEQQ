@@ -53,6 +53,7 @@ final class AppModel {
         static let enabled = "enabled"
         static let mode = "mode"
         static let simpleGains = "gains" // name kept from the first version
+        static let simplePreamp = "simplePreamp"
         static let advancedGains = "advancedGains"
         static let advancedPreamp = "advancedPreamp"
         static let outputUID = "outputUID"
@@ -96,6 +97,8 @@ final class AppModel {
     }
 
     private(set) var simpleGains: [Double]
+    /// Simple mode has no preamp control; this is only moved by "Fix limiting" and cleared by presets.
+    private(set) var simplePreamp: Double
     private(set) var advancedGains: [Double]
     private(set) var advancedPreamp: Double
     private(set) var userPresets: [Preset]
@@ -173,6 +176,9 @@ final class AppModel {
     /// How far the limiter is turning peaks down right now, in dB (0 = not limiting). Falls back
     /// slowly so short peaks stay visible.
     private(set) var limiterReductionDB: Double = 0
+    /// Deepest reduction (dB) by the main EQ's limiter since its curve last changed: how much
+    /// "Fix limiting" would lower the preamp. Per-app pipelines don't count; the main preamp can't fix those.
+    private(set) var limiterFixDB: Double = 0
 
     @ObservationIgnored private let engine = EQEngine()
     @ObservationIgnored private let defaults = UserDefaults.standard
@@ -191,6 +197,7 @@ final class AppModel {
         outputUID = defaults.string(forKey: Key.outputUID)
         let simple = defaults.array(forKey: Key.simpleGains) as? [Double] ?? []
         simpleGains = simple.count == EQCurve.simpleBandCount ? simple : Preset.simpleFlat.gains
+        simplePreamp = min(max(defaults.double(forKey: Key.simplePreamp), -24), 0)
         let advanced = defaults.array(forKey: Key.advancedGains) as? [Double] ?? []
         advancedGains = advanced.count == EQCurve.graphicFrequencies.count ? advanced : Preset.advancedFlat.gains
         advancedPreamp = defaults.double(forKey: Key.advancedPreamp)
@@ -394,7 +401,7 @@ final class AppModel {
     /// The curve the engine is running for the current mode.
     var activeCurve: EQCurve {
         switch mode {
-        case .simple: .simple(simpleGains)
+        case .simple: .simple(simpleGains, preampDB: simplePreamp)
         case .advanced: advancedCurve
         case .expert: expertCurve
         }
@@ -402,6 +409,8 @@ final class AppModel {
     var advancedCurve: EQCurve { .graphic(advancedGains, preampDB: advancedPreamp) }
 
     private func pushCurve() {
+        limiterFixDB = 0 // measured for the old curve
+        limiterFixHoldoff = 20 // ~0.7 s: let the gains glide and the limiter release before measuring again
         engine.setCurve(activeCurve)
         // Apps with only a volume have their own pipeline that must follow the main curve.
         if appVolumes.keys.contains(where: { appRules[$0] == nil }) { pushAppRules() }
@@ -426,8 +435,45 @@ final class AppModel {
     func applySimple(_ preset: Preset) {
         simpleGains = preset.gains
         defaults.set(simpleGains, forKey: Key.simpleGains)
+        setSimplePreamp(0)
         if mode == .simple { pushCurve() }
     }
+
+    private func setSimplePreamp(_ db: Double) {
+        simplePreamp = min(max(db, -24), 0)
+        defaults.set(simplePreamp, forKey: Key.simplePreamp)
+    }
+
+    /// Removes the preamp that "Fix limiting" added in Simple mode.
+    func resetSimplePreamp() {
+        setSimplePreamp(0)
+        if mode == .simple { pushCurve() }
+    }
+
+    // MARK: - Fix limiting
+
+    /// Lowers the current mode's preamp by the deepest limiter reduction measured on the main
+    /// EQ since its curve last changed, so the limiter no longer has to step in.
+    func fixLimiting() {
+        let amount = limiterFixDB
+        guard amount >= Self.limiterFixThresholdDB else { return }
+        let halfSteps = (amount * 2).rounded(.up) / 2
+        switch mode {
+        case .simple:
+            setSimplePreamp(simplePreamp - halfSteps)
+            pushCurve()
+        case .advanced:
+            setPreamp(advancedPreamp - halfSteps)
+        case .expert:
+            setExpertPreamp(expertCurve.preampDB - (amount * 10).rounded(.up) / 10)
+        }
+        limiterFixDB = 0
+    }
+
+    /// Reductions smaller than this aren't worth a preamp change.
+    static let limiterFixThresholdDB = 0.3
+
+    var canFixLimiting: Bool { limiterFixDB >= Self.limiterFixThresholdDB }
 
     // MARK: - Advanced mode
 
@@ -773,6 +819,7 @@ final class AppModel {
     // MARK: - Meter (only runs while a view showing it is open)
 
     @ObservationIgnored private var meterClients = 0
+    @ObservationIgnored private var limiterFixHoldoff = 0
 
     func startMetering() {
         meterClients += 1
@@ -791,6 +838,7 @@ final class AppModel {
         meterTimer = nil
         level = 0
         limiterReductionDB = 0
+        limiterFixDB = 0
     }
 
     private func tickMeter() {
@@ -800,9 +848,15 @@ final class AppModel {
         let target = peak > 0 ? max(0, 1 + 20 * log10(peak) / 60) : 0
         level = target > level ? target : max(target, level - 0.03)
 
-        let gain = engine.takeLimiterGain()
-        let reduction = gain < 0.995 ? -20 * log10(max(gain, 0.001)) : 0
-        let next = max(reduction, limiterReductionDB - 0.25)
+        let gains = engine.takeLimiterGains()
+        let dB = { (gain: Double) in gain < 0.995 ? -20 * log10(max(gain, 0.001)) : 0 }
+        let mainReduction = dB(gains.main)
+        let next = max(max(mainReduction, dB(gains.apps)), limiterReductionDB - 0.25)
         if next != limiterReductionDB { limiterReductionDB = next < 0.05 ? 0 : next }
+        if limiterFixHoldoff > 0 {
+            limiterFixHoldoff -= 1
+        } else if mainReduction > limiterFixDB {
+            limiterFixDB = mainReduction
+        }
     }
 }

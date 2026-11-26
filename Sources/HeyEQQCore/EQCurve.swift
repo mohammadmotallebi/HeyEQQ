@@ -62,13 +62,13 @@ public struct EQCurve: Codable, Hashable, Sendable {
     public static let simpleBandCount = 3
 
     /// Bass 100 Hz low shelf, mid 1 kHz peak, treble 8 kHz high shelf.
-    public static func simple(_ gains: [Double]) -> EQCurve {
+    public static func simple(_ gains: [Double], preampDB: Double = 0) -> EQCurve {
         let g = gains + Array(repeating: 0, count: max(0, simpleBandCount - gains.count))
         return EQCurve(bands: [
             EQBand(type: .lowShelf, frequency: 100, gainDB: g[0], q: 0.7071),
             EQBand(type: .peak, frequency: 1_000, gainDB: g[1], q: 0.7),
             EQBand(type: .highShelf, frequency: 8_000, gainDB: g[2], q: 0.7071),
-        ])
+        ], preampDB: preampDB)
     }
 
     // MARK: Graphic mode (10 bands, ISO octave centres)
