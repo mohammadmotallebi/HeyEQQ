@@ -6,11 +6,14 @@
 #   scripts/build-app.sh --open                           # build, then (re)launch
 #   scripts/build-app.sh --install                        # build, copy to /Applications, launch from there
 #   HARDENED_RUNTIME=1 SIGN_IDENTITY=... scripts/build-app.sh  # hardened runtime + timestamp (used by release.sh)
+#   UNIVERSAL=1 scripts/build-app.sh                      # Apple Silicon + Intel binary (used by release.sh)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-swift build -c release --product HeyEQQ
-BIN="$(swift build -c release --show-bin-path)/HeyEQQ"
+ARCH_FLAGS=()
+[[ "${UNIVERSAL:-0}" == 1 ]] && ARCH_FLAGS=(--arch arm64 --arch x86_64)
+swift build -c release --product HeyEQQ ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}
+BIN="$(swift build -c release ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)/HeyEQQ"
 
 APP=build/HeyEQQ.app
 rm -rf "$APP"
@@ -33,7 +36,7 @@ else
   echo "Ad-hoc signed (permission will be re-requested after each rebuild)"
 fi
 
-echo "Built $APP"
+echo "Built $APP ($(lipo -archs "$APP/Contents/MacOS/HeyEQQ"))"
 
 case "${1:-}" in
   --open)

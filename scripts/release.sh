@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds a notarized, stapled build/HeyEQQ-<version>.dmg for distribution.
+# Builds a notarized, stapled build/HeyEQQ-<version>.dmg (universal: Apple Silicon + Intel) for distribution.
 #
 # One-time setup:
 #   1. A "Developer ID Application" certificate in the login keychain (paid Apple Developer Program).
@@ -38,8 +38,8 @@ if [[ "${SKIP_NOTARIZE:-0}" != 1 ]]; then
        xcrun notarytool store-credentials $NOTARY_PROFILE --apple-id <id> --team-id <team> --password <app-specific-password>"
 fi
 
-# --- Build + sign the app (hardened runtime, secure timestamp) ---------------------------------
-SIGN_IDENTITY="$IDENTITY" HARDENED_RUNTIME=1 scripts/build-app.sh
+# --- Build + sign the app (universal, hardened runtime, secure timestamp) ---------------------------------
+SIGN_IDENTITY="$IDENTITY" HARDENED_RUNTIME=1 UNIVERSAL=1 scripts/build-app.sh
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 # --- DMG: app + /Applications shortcut ---------------------------------------------------------
