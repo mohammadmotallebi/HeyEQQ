@@ -15,6 +15,7 @@
   <img src="https://img.shields.io/badge/Apple%20Silicon%20%7C%20Intel-universal-19B3A6" alt="Universal">
   <a href="https://github.com/mohammadmotallebi/HeyEQQ/actions/workflows/ci.yml"><img src="https://github.com/mohammadmotallebi/HeyEQQ/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/mohammadmotallebi/HeyEQQ?color=lightgrey" alt="MIT License"></a>
+  <a href="https://buymeacoffee.com/mohamadmot5"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=black" alt="Buy me a coffee"></a>
 </p>
 
 ---
@@ -159,6 +160,16 @@ Surround: when the default output device's first stream has more than 2 channels
 that stream at full channel count instead of a stereo mixdown. Devices that split channels over
 several 2-channel streams stay on the stereo path. For debugging,
 `defaults write com.heyeqq.app forceDeviceStreamTap -bool YES` forces this path on any device.
+
+## Support HeyEQQ
+
+HeyEQQ is free and open source, built in my spare time. If it made your music sound better,
+you can buy me a coffee. It helps pay for new features, testing on more devices and, one day,
+an Apple Developer account so the app opens without any warnings. Thank you! ☕🎧
+
+<a href="https://buymeacoffee.com/mohamadmot5"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="48"></a>
+
+Not in a position to donate? A ⭐ on GitHub, a bug report or telling a friend helps just as much.
 
 ## Changelog
 
