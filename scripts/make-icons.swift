@@ -1,84 +1,141 @@
-// Generates the app icon (Support/AppIcon.icns) and the menu-bar template icon
-// (Support/MenuBarIcon.png, @2x) from the geometry of Support/Icon/equalizer.svg
-// (SVG Repo #141491, "equalizer"; viewBox 0 0 297 297).
+// Generates the app icon (Support/AppIcon.icns, Support/Icon/AppIcon-1024.png) and the menu-bar
+// template icon (Support/MenuBarIcon.png, @2x). Original HeyEQQ artwork, drawn entirely here:
+// five EQ slider tracks with knobs under a smooth response curve, on a rounded square.
 //   swift scripts/make-icons.swift
 import AppKit
 
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 let support = root.appendingPathComponent("Support")
 
-func color(_ hex: UInt32) -> CGColor {
+func color(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor {
     CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
-            blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+            blue: CGFloat(hex & 0xFF) / 255, alpha: alpha)
 }
 
-// Bars (x, y, height) and their colours, straight from the SVG.
-let bars: [(x: CGFloat, y: CGFloat, h: CGFloat, c: UInt32)] = [
-    (189.75, 75.917, 116, 0x27AE60), (90.75, 108.417, 83.5, 0x27AE60),
-    (222.75, 108.417, 83.5, 0xBFF796), (123.75, 59.917, 132, 0xBFF796),
-    (156.75, 125.917, 66, 0xBFF796), (57.75, 141.917, 50, 0xBFF796),
-]
-let barWidth: CGFloat = 16.5
-let blockY: CGFloat = 198.75, blockH: CGFloat = 16.333
+/// Knob heights of the five sliders, 0 (bottom) … 1 (top): a gentle "smile" curve.
+let knobs: [CGFloat] = [0.72, 0.45, 0.36, 0.52, 0.80]
 
-/// Draws in SVG coordinates (y down) into a context of `size` pixels.
+/// Draws in a 1000×1000 unit space with y pointing down, into a bitmap of `size` pixels.
 func render(size: Int, draw: (CGContext) -> Void) -> NSBitmapImageRep {
     let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8,
                                samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
     let ctx = NSGraphicsContext(bitmapImageRep: rep)!.cgContext
     ctx.translateBy(x: 0, y: CGFloat(size))
-    ctx.scaleBy(x: 1, y: -1) // SVG y-down
+    ctx.scaleBy(x: CGFloat(size) / 1000, y: -CGFloat(size) / 1000)
+    ctx.setShouldAntialias(true)
     draw(ctx)
     return rep
 }
 
+/// Slider geometry inside `rect`: x of each track and y of each knob.
+func sliderPoints(in rect: CGRect) -> [CGPoint] {
+    knobs.enumerated().map { i, k in
+        CGPoint(x: rect.minX + rect.width * CGFloat(i) / CGFloat(knobs.count - 1),
+                y: rect.maxY - rect.height * k)
+    }
+}
+
+/// Smooth curve through the points (Catmull-Rom converted to cubic Béziers).
+func smoothPath(through p: [CGPoint]) -> CGPath {
+    let path = CGMutablePath()
+    path.move(to: p[0])
+    for i in 0..<(p.count - 1) {
+        let p0 = p[max(i - 1, 0)], p1 = p[i], p2 = p[i + 1], p3 = p[min(i + 2, p.count - 1)]
+        let c1 = CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6)
+        let c2 = CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6)
+        path.addCurve(to: p2, control1: c1, control2: c2)
+    }
+    return path
+}
+
 func appIcon(size: Int) -> NSBitmapImageRep {
     render(size: size) { ctx in
-        let s = CGFloat(size)
-        // macOS icon grid: artwork ~80% of the canvas, centred.
-        let inset = s * 0.1, scale = (s - 2 * inset) / 297
-        ctx.translateBy(x: inset, y: inset)
-        ctx.scaleBy(x: scale, y: scale)
+        // macOS icon grid: 824-unit rounded square centred on the 1000 canvas.
+        let tile = CGRect(x: 88, y: 88, width: 824, height: 824)
+        let shape = CGPath(roundedRect: tile, cornerWidth: 185, cornerHeight: 185, transform: nil)
 
-        let circle = CGPath(ellipseIn: CGRect(x: 0, y: 0, width: 297, height: 297), transform: nil)
-        ctx.setFillColor(color(0x345F41)); ctx.addPath(circle); ctx.fillPath()
-
-        // Long shadow (path from the SVG, relative commands resolved), clipped to the circle.
+        // Drop shadow under the tile.
         ctx.saveGState()
-        ctx.addPath(circle); ctx.clip()
-        let shadow = CGMutablePath()
-        shadow.move(to: CGPoint(x: 239.25, y: 108.417))
-        shadow.addLine(to: CGPoint(x: 57.75, y: 215.083))
-        shadow.addLine(to: CGPoint(x: 139.38, y: 296.713))
-        shadow.addCurve(to: CGPoint(x: 148.5, y: 297), control1: CGPoint(x: 142.398, y: 296.896), control2: CGPoint(x: 145.437, y: 297))
-        shadow.addCurve(to: CGPoint(x: 296.057, y: 165.224), control1: CGPoint(x: 224.859, y: 297), control2: CGPoint(x: 287.746, y: 239.364))
-        shadow.closeSubpath()
-        ctx.setFillColor(color(0x2D5036)); ctx.addPath(shadow); ctx.fillPath()
+        ctx.setShadow(offset: CGSize(width: 0, height: 12), blur: 28, color: color(0x000000, 0.35))
+        ctx.addPath(shape); ctx.setFillColor(color(0x1B1F4B)); ctx.fillPath()
         ctx.restoreGState()
 
-        for b in bars {
-            ctx.setFillColor(color(b.c)); ctx.fill(CGRect(x: b.x, y: b.y, width: barWidth, height: b.h))
-            ctx.setFillColor(color(0xFFA800)); ctx.fill(CGRect(x: b.x, y: blockY, width: barWidth, height: blockH))
+        // Background: deep indigo to teal, top-left to bottom-right.
+        ctx.saveGState()
+        ctx.addPath(shape); ctx.clip()
+        let bg = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+                            colors: [color(0x2B2F7A), color(0x1C6E8C), color(0x19B3A6)] as CFArray,
+                            locations: [0, 0.6, 1])!
+        ctx.drawLinearGradient(bg, start: CGPoint(x: 150, y: 120), end: CGPoint(x: 870, y: 900), options: [])
+        // Soft highlight in the upper half.
+        let glow = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+                              colors: [color(0xFFFFFF, 0.18), color(0xFFFFFF, 0)] as CFArray, locations: [0, 1])!
+        ctx.drawRadialGradient(glow, startCenter: CGPoint(x: 360, y: 220), startRadius: 0,
+                               endCenter: CGPoint(x: 360, y: 220), endRadius: 520, options: [])
+        ctx.restoreGState()
+
+        let area = CGRect(x: 250, y: 270, width: 500, height: 460)
+        let points = sliderPoints(in: area)
+
+        // Slider tracks.
+        ctx.setLineCap(.round)
+        ctx.setLineWidth(34)
+        ctx.setStrokeColor(color(0xFFFFFF, 0.22))
+        for p in points {
+            ctx.move(to: CGPoint(x: p.x, y: area.minY)); ctx.addLine(to: CGPoint(x: p.x, y: area.maxY))
+        }
+        ctx.strokePath()
+        // Filled part of each track, below the knob.
+        ctx.setStrokeColor(color(0xFFFFFF, 0.55))
+        for p in points {
+            ctx.move(to: CGPoint(x: p.x, y: p.y)); ctx.addLine(to: CGPoint(x: p.x, y: area.maxY))
+        }
+        ctx.strokePath()
+
+        // Response curve through the knobs, with a soft glow.
+        let curve = smoothPath(through: points)
+        ctx.saveGState()
+        ctx.setShadow(offset: .zero, blur: 30, color: color(0xFFD36B, 0.8))
+        ctx.addPath(curve)
+        ctx.setLineWidth(30); ctx.setLineJoin(.round)
+        ctx.setStrokeColor(color(0xFFC94A))
+        ctx.strokePath()
+        ctx.restoreGState()
+
+        // Knobs.
+        for p in points {
+            let r: CGFloat = 50
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 0, height: 6), blur: 14, color: color(0x000000, 0.35))
+            ctx.setFillColor(color(0xFFFFFF))
+            ctx.fillEllipse(in: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r))
+            ctx.restoreGState()
+            ctx.setFillColor(color(0xFFB627))
+            ctx.fillEllipse(in: CGRect(x: p.x - 20, y: p.y - 20, width: 40, height: 40))
         }
     }
 }
 
-/// Monochrome glyph (bars + blocks) for the menu bar; macOS tints template images.
+/// Monochrome glyph for the menu bar (three sliders with knobs); macOS tints template images.
 func menuBarIcon(size: Int) -> NSBitmapImageRep {
     render(size: size) { ctx in
-        let s = CGFloat(size)
-        // Slightly wider bars so they survive the small size.
-        let w = barWidth * 1.25, dx = (w - barWidth) / 2
-        let glyph = CGRect(x: 57.75 - dx, y: 59.917, width: 239.25 + barWidth - 57.75 + 2 * dx, height: blockY + blockH - 59.917)
-        let scale = min(s * 0.94 / glyph.width, s * 0.94 / glyph.height)
-        ctx.translateBy(x: (s - glyph.width * scale) / 2, y: (s - glyph.height * scale) / 2)
-        ctx.scaleBy(x: scale, y: scale)
-        ctx.translateBy(x: -glyph.minX, y: -glyph.minY)
+        let xs: [CGFloat] = [220, 500, 780]
+        let ys: [CGFloat] = [380, 650, 300]
         ctx.setFillColor(CGColor(gray: 0, alpha: 1))
-        for b in bars {
-            ctx.fill(CGRect(x: b.x - dx, y: b.y, width: w, height: b.h))
-            ctx.fill(CGRect(x: b.x - dx, y: blockY, width: w, height: blockH))
+        ctx.setStrokeColor(CGColor(gray: 0, alpha: 1))
+        ctx.setLineCap(.round)
+        ctx.setLineWidth(110)
+        for x in xs {
+            ctx.move(to: CGPoint(x: x, y: 90)); ctx.addLine(to: CGPoint(x: x, y: 910))
+        }
+        ctx.strokePath()
+        // Knobs: punched-out ring so they read at 18 pt.
+        for (x, y) in zip(xs, ys) {
+            ctx.setBlendMode(.clear)
+            ctx.fillEllipse(in: CGRect(x: x - 185, y: y - 185, width: 370, height: 370))
+            ctx.setBlendMode(.normal)
+            ctx.fillEllipse(in: CGRect(x: x - 130, y: y - 130, width: 260, height: 260))
         }
     }
 }
