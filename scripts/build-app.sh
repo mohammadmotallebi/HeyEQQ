@@ -25,7 +25,9 @@ cp Support/AppIcon.icns Support/MenuBarIcon.png Support/MenuBarIcon@2x.png "$APP
 IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/Apple Development/ {print $2; exit}')}"
 if [[ -n "$IDENTITY" ]]; then
   if [[ "${HARDENED_RUNTIME:-0}" == 1 ]]; then
-    codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+    TIMESTAMP=(--timestamp)
+    [[ "$IDENTITY" == "-" ]] && TIMESTAMP=() # ad-hoc signatures can't carry a secure timestamp
+    codesign --force --sign "$IDENTITY" --options runtime "${TIMESTAMP[@]+"${TIMESTAMP[@]}"}" \
       --entitlements Support/HeyEQQ.entitlements "$APP"
   else
     codesign --force --sign "$IDENTITY" "$APP"

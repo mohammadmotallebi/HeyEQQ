@@ -12,6 +12,8 @@
 #   NOTARY_PROFILE=other-profile scripts/release.sh          # different keychain profile
 #   DEVELOPER_ID="<sha1 or name>" scripts/release.sh          # pick a specific Developer ID identity
 #   SKIP_NOTARIZE=1 scripts/release.sh                        # sign + DMG only (no upload)
+#   AD_HOC=1 scripts/release.sh                               # ad-hoc signed DMG: no certificate, no name in
+#                                                             # the signature, not notarized (current public builds)
 #
 # This does not replace scripts/build-app.sh for day-to-day work: the Developer ID signature differs
 # from the Apple Development one, so running the release build grants it a separate TCC permission.
@@ -27,6 +29,10 @@ VOLNAME="HeyEQQ $VERSION"
 die() { echo "error: $*" >&2; exit 1; }
 
 # --- Preflight ---------------------------------------------------------------------------------
+if [[ "${AD_HOC:-0}" == 1 ]]; then
+  DEVELOPER_ID="-"
+  SKIP_NOTARIZE=1
+fi
 IDENTITY="${DEVELOPER_ID:-$(security find-identity -v -p codesigning | awk '/Developer ID Application/ {print $2; exit}')}"
 [[ -n "$IDENTITY" ]] || die "no \"Developer ID Application\" signing identity in the keychain.
        Create one at https://developer.apple.com/account/resources/certificates (needs a paid
@@ -50,7 +56,9 @@ ln -s /Applications "$STAGING/Applications"
 
 rm -f "$DMG"
 hdiutil create -volname "$VOLNAME" -srcfolder "$STAGING" -fs HFS+ -format UDZO -ov "$DMG"
-codesign --force --sign "$IDENTITY" --timestamp "$DMG"
+if [[ "$IDENTITY" != "-" ]]; then
+  codesign --force --sign "$IDENTITY" --timestamp "$DMG"
+fi
 
 # --- Notarize + staple -------------------------------------------------------------------------
 if [[ "${SKIP_NOTARIZE:-0}" == 1 ]]; then

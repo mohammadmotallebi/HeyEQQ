@@ -53,6 +53,8 @@ xattr -dr com.apple.quarantine /Applications/HeyEQQ.app
 On first start macOS asks whether HeyEQQ may record system audio. Click **Allow**: HeyEQQ needs
 this to capture the sound it equalizes. The audio stays on your Mac; nothing is recorded or sent anywhere.
 
+macOS may ask again after you install an update; just allow it again.
+
 If you missed the prompt, or the level meter stays empty while music plays: **System Settings ›
 Privacy & Security › Screen & System Audio Recording**, and turn on HeyEQQ under "System Audio
 Recording Only".
@@ -130,7 +132,7 @@ DEVELOPER_ID="<identity>" SKIP_NOTARIZE=1 scripts/release.sh  # signed DMG witho
 `release.sh` builds a universal app with hardened runtime and writes `build/HeyEQQ-<version>.dmg`.
 Notarization needs a Developer ID Application certificate and a `notarytool` keychain profile
 (`HeyEQQ-notary`); the steps are at the top of the script. The version comes from `Support/Info.plist`.
-Current releases are signed with a development certificate and not notarized.
+`AD_HOC=1 scripts/release.sh` builds the current public downloads: ad-hoc signed (no certificate) and not notarized.
 
 ### Layout
 
