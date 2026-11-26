@@ -1,8 +1,27 @@
-# HeyEQQ
+<p align="center">
+  <img src="Support/Icon/AppIcon-1024.png" width="128" height="128" alt="HeyEQQ icon">
+</p>
 
-A system-wide equalizer for macOS that lives in the menu bar. It shapes the sound of every app
-(music, videos, games, calls) before it reaches your speakers or headphones. There is no audio
-driver to install: HeyEQQ uses the Core Audio process taps built into macOS.
+<h1 align="center">HeyEQQ</h1>
+
+<p align="center">
+  <strong>A system-wide equalizer for macOS, right in your menu bar.</strong><br>
+  Shape the sound of every app: music, videos, games and calls. No audio driver to install.
+</p>
+
+<p align="center">
+  <a href="https://github.com/mohammadmotallebi/HeyEQQ/releases/latest"><img src="https://img.shields.io/github/v/release/mohammadmotallebi/HeyEQQ?label=download&color=1C6E8C" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/macOS-15%2B-2B2F7A" alt="macOS 15+">
+  <img src="https://img.shields.io/badge/Apple%20Silicon%20%7C%20Intel-universal-19B3A6" alt="Universal">
+  <a href="https://github.com/mohammadmotallebi/HeyEQQ/actions/workflows/ci.yml"><img src="https://github.com/mohammadmotallebi/HeyEQQ/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/mohammadmotallebi/HeyEQQ?color=lightgrey" alt="MIT License"></a>
+</p>
+
+---
+
+HeyEQQ captures the sound of every app with the Core Audio process taps built into macOS, runs it
+through a high-quality equalizer and plays it to your speakers or headphones. Start with three
+simple sliders, or go all the way to a 32-band parametric EQ with headphone correction and per-app settings.
 
 ## Download & install
 
@@ -84,7 +103,8 @@ You can turn suggestions off in Settings › General.
 
 ## Build from source
 
-You need Xcode 16 or newer (Swift 6 toolchain) and macOS 15.
+You need macOS 15 or newer and Xcode 26 or newer (the Liquid Glass UI needs the macOS 26 SDK).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```sh
 scripts/build-app.sh --install   # build, sign, install to /Applications, launch
@@ -139,6 +159,10 @@ Surround: when the default output device's first stream has more than 2 channels
 that stream at full channel count instead of a stereo mixdown. Devices that split channels over
 several 2-channel streams stay on the stereo path. For debugging,
 `defaults write com.heyeqq.app forceDeviceStreamTap -bool YES` forces this path on any device.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for what's new in each version.
 
 ## License
 

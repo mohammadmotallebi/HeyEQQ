@@ -1,0 +1,47 @@
+name: Bug report
+description: Something doesn't work or sounds wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Switch to Expert mode
+        2. Import …
+        3. …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: HeyEQQ version
+      description: Shown at the bottom of Settings.
+      placeholder: "0.4.0"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: "macOS 26.1, MacBook Pro M3"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Output device
+      placeholder: "AirPods Pro, built-in speakers, USB DAC …"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Output of `log stream --predicate 'subsystem == \"com.heyeqq.app\"' --level debug` while reproducing."
+      render: text

@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: xcodebuild -version && swift --version
+      - name: Test
+        run: swift test
+      - name: Build app (universal)
+        run: UNIVERSAL=1 SIGN_IDENTITY=- scripts/build-app.sh

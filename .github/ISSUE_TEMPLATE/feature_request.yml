@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest an idea for HeyEQQ
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do?
+      description: Describe what you want to do and why. A problem is more useful than a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could it work?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've tried

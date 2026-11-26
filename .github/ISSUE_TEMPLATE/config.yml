@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation help
+    url: https://github.com/mohammadmotallebi/HeyEQQ#download--install
+    about: '"Apple could not verify HeyEQQ" and the audio permission are explained in the README.'
