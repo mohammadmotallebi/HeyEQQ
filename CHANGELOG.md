@@ -2,7 +2,7 @@
 
 All notable changes to HeyEQQ are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [0.4.1] - 2026-11-27
 
 ### Fixed
 - The preamp slider had no effect while Sound Quality was set to Clean. Clean now lowers the level by the EQ's biggest boost
