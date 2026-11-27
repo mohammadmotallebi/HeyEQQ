@@ -234,4 +234,19 @@ private func analogPeakDB(at f: Double, centre: Double, gainDB: Double, q: Doubl
         let alreadyLowered = EQCurve.graphic([6, 0, 0, 0, 0, 0, 0, 0, 0, 0], preampDB: -9)
         #expect(alreadyLowered.withCleanHeadroom() == alreadyLowered)
     }
+
+    @Test func boostCompensationKeepsThePreampEffective() {
+        let boosted = EQCurve.graphic([6, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        let boost = boosted.maxBoostDB()
+        for preamp in [-9.0, -3, 0, 2.5, 6] {
+            var curve = boosted
+            curve.preampDB = preamp
+            let out = curve.withBoostCompensation()
+            #expect(out.bands == curve.bands)
+            #expect(abs(out.preampDB - (preamp - boost)) < 0.11)
+        }
+        #expect(EQCurve.flat.withBoostCompensation() == EQCurve.flat)
+        let cutOnly = EQCurve.graphic([-3, 0, 0, 0, 0, 0, 0, 0, 0, -2], preampDB: 4)
+        #expect(cutOnly.withBoostCompensation() == cutOnly)
+    }
 }

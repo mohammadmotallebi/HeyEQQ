@@ -138,7 +138,7 @@ struct SettingsView: View {
             return "Loud: boosts play louder and the limiter turns down peaks that would clip. Constant limiting sounds slightly squashed."
         }
         let lowered = model.cleanHeadroomDB
-        return "Clean: the volume comes down just enough that the limiter never has to work. "
+        return "Clean: the volume comes down by the EQ\u{2019}s biggest boost, so with the preamp at 0 dB the limiter never has to work. "
             + (lowered > 0.05 ? String(format: "Right now it plays %.1f dB lower; turn your speaker up to compensate.", lowered)
                               : "Your current EQ needs no lowering.")
     }

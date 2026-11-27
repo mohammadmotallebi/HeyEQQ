@@ -464,10 +464,10 @@ final class AppModel {
     var advancedCurve: EQCurve { .graphic(advancedGains, preampDB: advancedPreamp) }
 
     /// What the engine actually plays for a curve the user set: the clarity bands are added, then
-    /// (in Clean mode) the preamp is lowered until nothing rises above 0 dB.
+    /// (in Clean mode) the preamp is lowered by the curve's highest boost, on top of the user's preamp.
     private func outputCurve(_ curve: EQCurve) -> EQCurve {
         let shaped = clarity > 0 ? curve.addingClarity(clarity) : curve
-        return cleanHeadroom ? shaped.withCleanHeadroom() : shaped
+        return cleanHeadroom ? shaped.withBoostCompensation() : shaped
     }
 
     // MARK: - Built-in speaker protection
@@ -510,7 +510,7 @@ final class AppModel {
     /// How much Clean mode is lowering the main EQ right now, in dB (0 when off or not needed).
     var cleanHeadroomDB: Double {
         guard cleanHeadroom else { return 0 }
-        return (clarity > 0 ? activeCurve.addingClarity(clarity) : activeCurve).headroomNeededDB()
+        return max(0, (clarity > 0 ? activeCurve.addingClarity(clarity) : activeCurve).maxBoostDB())
     }
 
     /// After a sound-quality option changed: resend the main curve and every per-app curve.

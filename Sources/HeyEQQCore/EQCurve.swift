@@ -141,6 +141,17 @@ public struct EQCurve: Codable, Hashable, Sendable {
         return curve
     }
 
+    /// The "Clean" sound-quality option: the preamp comes down by the bands' highest boost, and the
+    /// user's own preamp still applies on top (so the preamp slider always changes the level).
+    /// Unlike `withCleanHeadroom()`, a positive preamp can still push peaks into the limiter.
+    public func withBoostCompensation() -> EQCurve {
+        let boost = max(0, maxBoostDB())
+        guard boost > 0 else { return self }
+        var curve = self
+        curve.preampDB = preampDB - (boost * 10).rounded(.up) / 10
+        return curve
+    }
+
     // MARK: Built-in speaker protection
 
     /// Bass limit used on the Mac's own speakers: below this frequency…
